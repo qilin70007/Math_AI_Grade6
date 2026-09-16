@@ -1,0 +1,19 @@
+{
+  "name": "数芽 · 六年级数学 AI 私教",
+  "short_name": "数芽数学",
+  "description": "上海六年级数学同步学习、错题复习与家长看板",
+  "lang": "zh-CN",
+  "start_url": "./#today",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f5f6f1",
+  "theme_color": "#184f4a",
+  "icons": [
+    {
+      "src": "./assets/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
