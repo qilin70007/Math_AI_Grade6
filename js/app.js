@@ -1,4 +1,4 @@
-import { CURRICULUM, ERROR_TYPES, LESSONS, NAV_ITEMS, STATUS_META } from "./data.js";
+import { CURRICULUM, ERROR_TYPES, LESSONS, NAV_ITEMS, STATUS_META, TERM_OPTIONS } from "./data.js";
 import {
   applyEvidence,
   buildTodayPlan,
@@ -27,7 +27,7 @@ import {
 } from "./storage.js";
 
 let state = loadState();
-let currentTerm = "六上";
+let currentTerm = TERM_OPTIONS.find((term) => term.label === state.profile.term)?.id || "衔接";
 let mistakeFilter = "全部";
 let installPrompt = null;
 const expandedUnits = new Set(["u1"]);
@@ -130,6 +130,8 @@ function statusPill(skill) {
 function renderToday() {
   const summary = computeSummary(state);
   const focus = getCurrentFocus(state);
+  const focusUnit = CURRICULUM.find((unit) => unit.skills.some((skill) => skill.id === focus?.id)) || CURRICULUM[0];
+  const focusUnitProgress = calculateUnitProgress(focusUnit, state.skills);
   const due = getDueSkills(state);
   const plan = buildTodayPlan(state);
   const recent = [...state.sessions].sort((a, b) => b.date.localeCompare(a.date))[0];
@@ -146,9 +148,9 @@ function renderToday() {
           <a class="button ghost" href="#map">看看知识地图</a>
         </div>
       </div>
-      <div class="hero-orbit" aria-label="本单元进度${calculateUnitProgress(CURRICULUM[0], state.skills)}%">
-        <div class="focus-ring" style="--progress:${calculateUnitProgress(CURRICULUM[0], state.skills)}%">
-          <div><strong>${calculateUnitProgress(CURRICULUM[0], state.skills)}%</strong><span>数的整除</span></div>
+      <div class="hero-orbit" aria-label="${escapeHtml(focusUnit.title)}单元进度${focusUnitProgress}%">
+        <div class="focus-ring" style="--progress:${focusUnitProgress}%">
+          <div><strong>${focusUnitProgress}%</strong><span>${escapeHtml(focusUnit.title)}</span></div>
         </div>
       </div>
     </section>
@@ -391,16 +393,22 @@ function renderMistakes() {
 
 function renderMap() {
   const units = CURRICULUM.filter((unit) => unit.term === currentTerm);
+  const termMeta = TERM_OPTIONS.find((term) => term.id === currentTerm) || TERM_OPTIONS[0];
   const allSkills = getAllSkills(state);
   const termSkills = allSkills.filter((skill) => units.some((unit) => unit.id === skill.unitId));
   const mastered = termSkills.filter((skill) => statusForMastery(skill.mastery, skill.reviewDue) === "mastered").length;
 
   return `
-    ${pageHead("KNOWLEDGE MAP", "六年级数学知识地图", "把“学过”拆成可验证的小能力；点击知识点可以查看掌握依据。", `
+    ${pageHead("KNOWLEDGE MAP", "上海初中数学知识地图", "覆盖小初衔接和六至九年级八个学期；点击知识点可查看掌握依据。")}
+    <section class="card curriculum-toolbar" aria-label="选择学期">
       <div class="term-switch">
-        <button class="seg-button ${currentTerm === "六上" ? "active" : ""}" type="button" data-action="switch-term" data-term="六上">六年级上</button>
-        <button class="seg-button ${currentTerm === "六下" ? "active" : ""}" type="button" data-action="switch-term" data-term="六下">六年级下</button>
-      </div>`)}
+        ${TERM_OPTIONS.map((term) => `<button class="seg-button ${currentTerm === term.id ? "active" : ""}" type="button" data-action="switch-term" data-term="${term.id}">${term.shortLabel}</button>`).join("")}
+      </div>
+      <div class="curriculum-edition ${termMeta.status === "provisional" ? "provisional" : ""}">
+        <span class="tag ${termMeta.status === "provisional" ? "warm" : termMeta.status === "bridge" ? "purple" : ""}">${escapeHtml(termMeta.edition)}</span>
+        <div><strong>${escapeHtml(termMeta.label)}</strong><p>${escapeHtml(termMeta.note)}</p></div>
+      </div>
+    </section>
     <section class="grid three" style="margin-bottom:20px">
       <article class="card metric-card"><span class="metric-icon">◫</span><strong>${termSkills.length}</strong><span>知识点</span></article>
       <article class="card metric-card" style="--metric-soft:var(--mint)"><span class="metric-icon">✓</span><strong>${mastered}</strong><span>稳定掌握</span></article>
@@ -419,7 +427,7 @@ function renderMap() {
           ${expanded ? `<div class="skill-list">${unit.skills.map((baseSkill) => {
             const skill = { ...baseSkill, ...state.skills[baseSkill.id] };
             return `<button class="skill-row" style="width:100%;border-left:0;border-right:0;background:transparent;text-align:left;cursor:pointer" type="button" data-action="open-skill" data-id="${skill.id}">
-              <span class="skill-copy"><strong>${escapeHtml(skill.title)}</strong><small>掌握证据 ${skill.evidence || 0} 条${skill.currentFocus ? " · 当前重点" : skill.nextUp ? " · 下一步" : ""}</small></span>
+              <span class="skill-copy"><strong>${escapeHtml(skill.title)}</strong><small>掌握证据 ${skill.evidence || 0} 条${skill.extension ? " · 阅读拓展" : ""}${skill.currentFocus ? " · 当前重点" : skill.nextUp ? " · 下一步" : ""}</small></span>
               <span class="skill-progress"><span class="progress-track" style="--progress:${skill.mastery}%;--bar:${unit.color}"><span></span></span><small>${skill.mastery}</small></span>
               ${statusPill(skill)}
             </button>`;
@@ -427,7 +435,7 @@ function renderMap() {
         </article>`;
       }).join("")}
     </section>
-    <p style="margin:18px 4px 0;color:var(--muted);font-size:11px;line-height:1.7">说明：当前课程框架为首版示例，正式使用前请在家长设置中按学校实际教材与进度校准。掌握度不是考试分数，而是综合独立作答、提示次数、解释质量和延迟复测形成的学习证据。</p>`;
+    <p style="margin:18px 4px 0;color:var(--muted);font-size:11px;line-height:1.7">说明：知识树按上海初中数学新版教材的章节顺序整理，并单列旧版“数的整除、分数”作为小初衔接。九年级下为新版预备目录，待正式教材发放后校准。掌握度不是考试分数，而是综合独立作答、提示次数、解释质量和延迟复测形成的学习证据。</p>`;
 }
 
 function renderPinGate() {
@@ -626,8 +634,8 @@ function openProfileModal() {
       <div class="form-grid">
         <div class="field"><label for="profile-name">称呼</label><input id="profile-name" name="name" value="${escapeHtml(state.profile.name)}" required /></div>
         <div class="field"><label for="profile-surname">头像文字</label><input id="profile-surname" name="surname" maxlength="2" value="${escapeHtml(state.profile.surname)}" required /></div>
-        <div class="field"><label for="profile-grade">年级</label><input id="profile-grade" name="grade" value="${escapeHtml(state.profile.grade)}" /></div>
-        <div class="field"><label for="profile-term">学期</label><select id="profile-term" name="term"><option ${state.profile.term.includes("上") ? "selected" : ""}>六年级上</option><option ${state.profile.term.includes("下") ? "selected" : ""}>六年级下</option></select></div>
+        <div class="field"><label for="profile-grade">年级</label><select id="profile-grade" name="grade">${["六年级", "七年级", "八年级", "九年级"].map((grade) => `<option ${state.profile.grade === grade ? "selected" : ""}>${grade}</option>`).join("")}</select></div>
+        <div class="field"><label for="profile-term">学期</label><select id="profile-term" name="term">${TERM_OPTIONS.filter((term) => term.status !== "bridge").map((term) => `<option ${state.profile.term === term.label ? "selected" : ""}>${term.label}</option>`).join("")}</select></div>
         <div class="field full"><label for="profile-school">学校</label><input id="profile-school" name="school" value="${escapeHtml(state.profile.school)}" /></div>
         <div class="field full"><label for="profile-textbook">教材版本</label><input id="profile-textbook" name="textbook" value="${escapeHtml(state.profile.textbook)}" /><small>正式使用前建议按学校实际教材封面和目录校准。</small></div>
       </div>
@@ -651,7 +659,10 @@ function openSettingsModal() {
 }
 
 function openMistakeForm() {
-  const unitOptions = CURRICULUM.filter((unit) => unit.term === "六上").map((unit) => `<option value="${unit.id}">${escapeHtml(unit.title)}</option>`).join("");
+  const unitOptions = TERM_OPTIONS.map((term) => {
+    const units = CURRICULUM.filter((unit) => unit.term === term.id);
+    return units.length ? `<optgroup label="${escapeHtml(term.label)}">${units.map((unit) => `<option value="${unit.id}">${escapeHtml(unit.number)} · ${escapeHtml(unit.title)}</option>`).join("")}</optgroup>` : "";
+  }).join("");
   openModal(modalFrame("录入一道错题", `
     <form id="mistake-form">
       <div class="form-grid">
@@ -851,6 +862,7 @@ document.addEventListener("submit", async (event) => {
       school: String(data.get("school") || "").trim(),
       textbook: String(data.get("textbook") || "").trim()
     };
+    currentTerm = TERM_OPTIONS.find((term) => term.label === state.profile.term)?.id || currentTerm;
     persist();
     closeModal();
     render();

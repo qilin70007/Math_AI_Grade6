@@ -1,6 +1,6 @@
 import { CURRICULUM, DEFAULT_MISTAKES, STATUS_META } from "./data.js";
 
-export const APP_STATE_VERSION = 1;
+export const APP_STATE_VERSION = 2;
 
 export function isoDate(date = new Date()) {
   const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
@@ -241,7 +241,7 @@ export function createDefaultState(now = new Date()) {
       grade: "六年级",
       term: "六年级上",
       school: "学校A",
-      textbook: "沪教版（请按学校教材校准）",
+      textbook: "上海初中数学新版（含小初衔接）",
       dailyMinutes: 20,
       pin: "2609"
     },

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "面向上海六年级学生的本地优先数学 AI 私教 PWA",
+  "description": "面向上海初中学生的本地优先数学 AI 私教 PWA",
   "scripts": {
     "start": "node server.mjs",
     "test": "node --test tests/*.test.js",

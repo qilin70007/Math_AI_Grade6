@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { CURRICULUM, LESSONS } from "../js/data.js";
+import { CURRICULUM, LESSONS, TERM_OPTIONS } from "../js/data.js";
 import {
   applyEvidence,
   buildTodayPlan,
@@ -56,7 +56,7 @@ test("默认状态可生成今日计划和汇总", () => {
   assert.equal(state.profile.school, "学校A");
   assert.equal(plan.length, 3);
   assert.equal(plan.reduce((sum, item) => sum + item.minutes, 0), 20);
-  assert.ok(summary.totalSkills > 20);
+  assert.ok(summary.totalSkills > 200);
   assert.ok(summary.mastered > 0);
 });
 
@@ -71,4 +71,36 @@ test("旧备份缺字段时可安全补齐", () => {
   assert.equal(hydrated.profile.name, "测试同学");
   assert.equal(hydrated.profile.grade, "六年级");
   assert.ok(hydrated.skills.gcd);
+  assert.ok(hydrated.skills["c32-data-decision"]);
+});
+
+test("知识树覆盖衔接内容和六至九年级八个学期", () => {
+  assert.deepEqual(TERM_OPTIONS.map((term) => term.id), [
+    "衔接", "六上", "六下", "七上", "七下", "八上", "八下", "九上", "九下"
+  ]);
+  for (const term of TERM_OPTIONS) {
+    assert.ok(CURRICULUM.some((unit) => unit.term === term.id), `${term.label}应包含单元`);
+  }
+  assert.equal(CURRICULUM.find((unit) => unit.id === "u1")?.title, "数的整除");
+  assert.equal(CURRICULUM.find((unit) => unit.id === "u2")?.title, "分数");
+});
+
+test("新版章节1至32完整且单元、知识点标识唯一", () => {
+  const chapters = CURRICULUM.filter((unit) => Number.isInteger(unit.chapter)).map((unit) => unit.chapter);
+  assert.deepEqual(chapters, Array.from({ length: 32 }, (_, index) => index + 1));
+
+  const unitIds = CURRICULUM.map((unit) => unit.id);
+  const skillIds = CURRICULUM.flatMap((unit) => unit.skills.map((skill) => skill.id));
+  assert.equal(new Set(unitIds).size, unitIds.length);
+  assert.equal(new Set(skillIds).size, skillIds.length);
+  assert.ok(skillIds.includes("gcd"));
+  assert.ok(skillIds.includes("fraction-add-sub"));
+});
+
+test("九年级下册明确标记为新版预备内容", () => {
+  const term = TERM_OPTIONS.find((item) => item.id === "九下");
+  const units = CURRICULUM.filter((unit) => unit.term === "九下");
+  assert.equal(term?.status, "provisional");
+  assert.ok(units.length > 0);
+  assert.ok(units.every((unit) => unit.provisional));
 });

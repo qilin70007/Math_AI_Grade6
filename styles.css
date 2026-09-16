@@ -1001,6 +1001,40 @@ img {
   gap: 8px;
 }
 
+.curriculum-toolbar {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 20px;
+  padding: 16px 18px;
+}
+
+.curriculum-edition {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-top: 13px;
+  border-top: 1px solid var(--line);
+}
+
+.curriculum-edition.provisional {
+  margin: 0 -4px -2px;
+  padding: 13px 12px 2px;
+  border-radius: 12px;
+  background: #fff8e8;
+}
+
+.curriculum-edition strong {
+  display: block;
+  font-size: 13px;
+}
+
+.curriculum-edition p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
 .seg-button {
   min-height: 38px;
   padding: 7px 14px;
@@ -1039,6 +1073,7 @@ img {
   border-radius: 14px;
   color: var(--unit-color, var(--forest));
   background: color-mix(in srgb, var(--unit-color, var(--forest)) 13%, white);
+  font-size: 13px;
   font-weight: 800;
 }
 

@@ -1,7 +1,7 @@
 {
-  "name": "数芽 · 六年级数学 AI 私教",
+  "name": "数芽 · 上海初中数学 AI 私教",
   "short_name": "数芽数学",
-  "description": "上海六年级数学同步学习、错题复习与家长看板",
+  "description": "上海初中数学六至九年级知识地图、同步学习、错题复习与家长看板",
   "lang": "zh-CN",
   "start_url": "./#today",
   "scope": "./",
