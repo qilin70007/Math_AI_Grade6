@@ -1,4 +1,4 @@
-const CACHE_NAME = "math-ai-grade6-v3";
+const CACHE_NAME = "math-ai-grade6-v4";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -6,6 +6,7 @@ const APP_SHELL = [
   "./manifest.webmanifest",
   "./assets/icon.svg",
   "./js/app.js",
+  "./js/ai.js",
   "./js/core.js",
   "./js/data.js",
   "./js/storage.js"

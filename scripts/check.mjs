@@ -7,12 +7,21 @@ const requiredFiles = [
   "sw.js",
   "assets/icon.svg",
   "js/app.js",
+  "js/ai.js",
   "js/core.js",
   "js/data.js",
   "js/storage.js"
 ];
 
+const serverFiles = [
+  "worker/package.json",
+  "worker/wrangler.toml",
+  "worker/src/index.js",
+  "AI_SETUP.md"
+];
+
 for (const file of requiredFiles) await access(new URL(`../${file}`, import.meta.url));
+for (const file of serverFiles) await access(new URL(`../${file}`, import.meta.url));
 
 const manifest = JSON.parse(await readFile(new URL("../manifest.webmanifest", import.meta.url), "utf8"));
 if (!manifest.name || !manifest.start_url || !Array.isArray(manifest.icons) || !manifest.icons.length) {
@@ -32,4 +41,4 @@ for (const file of requiredFiles.filter((item) => !item.startsWith("tests/"))) {
   }
 }
 
-console.log(`静态检查通过：${requiredFiles.length} 个核心文件齐全。`);
+console.log(`静态检查通过：${requiredFiles.length} 个前端文件、${serverFiles.length} 个 AI 服务文件齐全。`);

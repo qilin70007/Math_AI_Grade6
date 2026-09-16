@@ -25,11 +25,33 @@ import {
   saveMistakeImage,
   saveState
 } from "./storage.js";
+import {
+  buildTutorContext,
+  checkAiHealth,
+  compactCurriculumCatalog,
+  getAiConfig,
+  imageFileToDataUrl,
+  isAiConfigured,
+  normalizeEndpoint,
+  recognizeMathImage,
+  saveAiConfig,
+  sendTutorMessage,
+  startTutorSession,
+  summarizeTutorSession
+} from "./ai.js";
 
 let state = loadState();
+if (state.activeLesson?.mode === "ai" && state.activeLesson.loading) {
+  state.activeLesson.loading = false;
+  state.activeLesson.error = "上次请求因页面关闭或刷新而中断，可以重试本轮。";
+  saveState(state);
+}
 let currentTerm = TERM_OPTIONS.find((term) => term.label === state.profile.term)?.id || "衔接";
 let mistakeFilter = "全部";
 let installPrompt = null;
+let aiConfig = getAiConfig();
+let mistakePreviewUrl = null;
+let pendingOcrResult = null;
 const expandedUnits = new Set(["u1"]);
 
 const app = document.querySelector("#app");
@@ -75,6 +97,9 @@ function openModal(content, labelledBy = "modal-title") {
 }
 
 function closeModal() {
+  if (mistakePreviewUrl) URL.revokeObjectURL(mistakePreviewUrl);
+  mistakePreviewUrl = null;
+  pendingOcrResult = null;
   modalRoot.innerHTML = "";
   document.body.style.overflow = "";
 }
@@ -214,11 +239,12 @@ function renderToday() {
 }
 
 function lessonMessageHtml(message) {
+  const text = escapeHtml(message.text).replaceAll("\n", "<br />");
   return `
     <div class="message ${message.role === "student" ? "student" : "assistant"}">
       <span class="message-avatar">${message.role === "student" ? escapeHtml(state.profile.surname || "我") : "芽"}</span>
       <div class="message-bubble">
-        <p>${escapeHtml(message.text)}</p>
+        <p>${text}</p>
         ${message.math ? `<span class="math-block">${escapeHtml(message.math)}</span>` : ""}
       </div>
     </div>`;
@@ -243,36 +269,114 @@ function newLessonRuntime(lesson) {
 }
 
 function renderClassroomLanding(lesson) {
-  const skill = getSkill(state, lesson.skillId);
+  const skill = getSkill(state, state.classroomFocusSkillId) || getCurrentFocus(state) || getSkill(state, lesson.skillId);
+  const unit = CURRICULUM.find((item) => item.skills.some((candidate) => candidate.id === skill?.id));
+  const mistake = state.pendingLessonContext?.mistakeId
+    ? state.mistakes.find((item) => item.id === state.pendingLessonContext.mistakeId)
+    : null;
+  const connected = isAiConfigured(aiConfig);
   return `
-    ${pageHead("AI CLASSROOM", "今天的AI课堂", "20分钟，完成一轮从理解到独立检测的学习。")}
+    ${pageHead("AI CLASSROOM", "开放式 AI 数学课堂", "可以追问、讲思路、要求换一种讲法；AI 会根据真实对话继续教学。")}
     <section class="hero" style="min-height:330px">
       <div class="hero-copy">
-        <p class="eyebrow">当前重点 · 掌握度 ${skill?.mastery || 0}%</p>
-        <h1>${escapeHtml(lesson.title)}</h1>
-        <p>${escapeHtml(lesson.subtitle)}。系统会记录提示次数、独立完成情况和典型错误，作为掌握度证据。</p>
+        <p class="eyebrow">${mistake ? "错题专项" : escapeHtml(unit?.title || "当前重点")} · 掌握度 ${skill?.mastery || 0}%</p>
+        <h1>${escapeHtml(skill?.title || lesson.title)}</h1>
+        <p>${mistake ? `围绕“${escapeHtml(mistake.title)}”先诊断错误，再逐步讲解和变式检验。` : "从孩子当前的理解出发，一次只推进一个问题；可以自由回答，不限固定选项。"}</p>
         <div class="button-row">
-          <button class="button primary" type="button" data-action="start-lesson">开始学习 · 约${lesson.duration}分钟</button>
+          ${connected
+            ? '<button class="button primary" type="button" data-action="start-ai-lesson">开始开放式 AI 课</button>'
+            : '<button class="button primary" type="button" data-action="open-ai-settings">请家长连接大模型服务</button>'}
+          <button class="button ghost" type="button" data-action="start-lesson">使用离线示范课</button>
         </div>
       </div>
       <div class="hero-orbit">
-        <div class="focus-ring" style="--progress:${skill?.mastery || 0}%"><div><strong>${lesson.questions.length}</strong><span>个学习关卡</span></div></div>
+        <div class="focus-ring" style="--progress:${skill?.mastery || 0}%"><div><strong>∞</strong><span>自由追问与反馈</span></div></div>
       </div>
     </section>
     <section class="section-block grid two">
       <article class="card pad">
-        <div class="section-head"><h2>本节目标</h2><span class="tag">理解优先</span></div>
-        <div class="goal-list">${lesson.goals.map((goal, index) => `<div class="goal-row"><span>${index + 1}</span><div>${escapeHtml(goal)}</div></div>`).join("")}</div>
+        <div class="section-head"><h2>开放式教学</h2><span class="tag ${connected ? "" : "warm"}">${connected ? "服务已填写" : "待连接"}</span></div>
+        <div class="goal-list">
+          <div class="goal-row"><span>问</span><div>接受完整句子、算式、自己的疑问，不要求命中预设答案。</div></div>
+          <div class="goal-row"><span>引</span><div>先诊断再分层提示，不急着公布答案；听不懂可以要求换个例子。</div></div>
+          <div class="goal-row"><span>证</span><div>结课时只按真实作答生成报告，一次答对不会直接判为稳定掌握。</div></div>
+        </div>
       </article>
       <article class="card pad">
-        <div class="section-head"><h2>课堂约定</h2></div>
+        <div class="section-head"><h2>隐私与兜底</h2><span class="tag purple">适合个人使用</span></div>
         <div class="goal-list">
-          <div class="goal-row"><span>说</span><div>先在心里或口头说思路，再输入答案。</div></div>
-          <div class="goal-row"><span>想</span><div>不会时先点“给一点提示”，系统不会直接公布完整答案。</div></div>
-          <div class="goal-row"><span>查</span><div>提交前检查条件、计算和问题到底在问什么。</div></div>
+          <div class="goal-row"><span>隐</span><div>只发送年级、知识点与本节对话；称呼、学校和家长 PIN 不发送。</div></div>
+          <div class="goal-row"><span>稳</span><div>模型不可用时，仍可进入无需联网的“最大公因数”示范课。</div></div>
+          <div class="goal-row"><span>设</span><div>大模型服务地址由家长配置，API Key 只保存在服务端。</div></div>
         </div>
       </article>
     </section>`;
+}
+
+function renderAiLessonComplete(runtime) {
+  const session = state.sessions.find((item) => item.id === runtime.sessionId);
+  return `
+    ${pageHead("AI LESSON COMPLETE", "开放式课堂已完成", "报告由本节真实对话生成；掌握度最多增加一条证据。")}
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">${escapeHtml(runtime.context.topic)} · AI 课堂</p>
+        <h1>${session?.score || 0}分，下一步已经排好。</h1>
+        <p>${escapeHtml(session?.summary || "本节学习记录已经保存。")}</p>
+        <div class="button-row">
+          <button class="button primary" type="button" data-action="open-report" data-id="${session?.id}">查看本节报告</button>
+          <button class="button ghost" type="button" data-action="reset-lesson">学习其他知识点</button>
+        </div>
+      </div>
+      <div class="hero-orbit"><div class="focus-ring" style="--progress:${session?.independentRate || 0}%"><div><strong>${session?.independentRate || 0}%</strong><span>独立完成率</span></div></div></div>
+    </section>
+    <section class="section-block grid three">
+      <article class="card metric-card"><span class="metric-icon">↗</span><strong>${runtime.turns || 0}</strong><span>有效对话轮次</span></article>
+      <article class="card metric-card" style="--metric-soft:var(--orange-soft)"><span class="metric-icon">?</span><strong>${runtime.hints || 0}</strong><span>主动请求提示</span></article>
+      <article class="card metric-card" style="--metric-soft:var(--purple-soft)"><span class="metric-icon">◎</span><strong>${runtime.evidenceRecorded ? "1条" : "0条"}</strong><span>${runtime.evidenceRecorded ? "新增掌握证据" : "本节证据不足"}</span></article>
+    </section>`;
+}
+
+function renderAiLesson(runtime) {
+  const suggestions = runtime.suggestedActions?.length
+    ? runtime.suggestedActions
+    : ["给我一点提示", "换一个更简单的例子", "让我自己试一道"];
+  return `
+    <header class="page-head">
+      <div><p class="eyebrow">OPEN AI CLASSROOM</p><h1>${escapeHtml(runtime.context.topic)}</h1><p>${escapeHtml(runtime.context.unit)} · 已对话 ${runtime.turns || 0} 轮</p></div>
+      <div class="button-row"><button class="button secondary small" type="button" data-action="finish-ai-lesson" ${runtime.loading ? "disabled" : ""}>结束并生成报告</button><button class="button ghost small" type="button" data-action="pause-lesson">暂时离开</button></div>
+    </header>
+    <div class="lesson-layout">
+      <section class="card lesson-card">
+        <div class="lesson-top">
+          <div class="lesson-title-row"><h2>自由问答</h2><span class="tag ${runtime.error ? "warm" : ""}">${runtime.loading ? "AI 正在思考" : runtime.error ? "等待重试" : "一次一个问题"}</span></div>
+          <div class="ai-privacy-note">本节不会发送称呼、学校或家长 PIN。不要在回答中输入个人信息。</div>
+        </div>
+        <div class="chat-log" id="chat-log">
+          ${runtime.messages.map(lessonMessageHtml).join("")}
+          ${runtime.loading ? '<div class="message assistant"><span class="message-avatar">芽</span><div class="message-bubble thinking" aria-label="AI正在思考"><i></i><i></i><i></i></div></div>' : ""}
+          ${runtime.error ? `<div class="ai-error"><strong>这次没有连上</strong><span>${escapeHtml(runtime.error)}</span><button class="button secondary small" type="button" data-action="retry-ai-request">重试本轮</button></div>` : ""}
+        </div>
+        <form class="composer" id="ai-answer-form">
+          <div class="composer-main">
+            <label class="sr-only" for="ai-lesson-answer">输入答案、思路或问题</label>
+            <textarea id="ai-lesson-answer" name="answer" rows="2" autocomplete="off" placeholder="写答案、说思路，或直接问哪里没听懂……" required ${runtime.loading ? "disabled" : ""}></textarea>
+            <button class="button primary" type="submit" ${runtime.loading ? "disabled" : ""}>发送</button>
+          </div>
+          <div class="ai-suggestion-row">${suggestions.slice(0, 3).map((item) => `<button class="suggestion-chip" type="button" data-action="ai-quick-message" data-message="${escapeHtml(item)}" ${runtime.loading ? "disabled" : ""}>${escapeHtml(item)}</button>`).join("")}</div>
+        </form>
+      </section>
+      <aside class="lesson-side">
+        <article class="card pad">
+          <div class="section-head"><h3>本节上下文</h3><span class="tag">${escapeHtml(runtime.context.grade)}</span></div>
+          <div class="goal-list">
+            <div class="goal-row"><span>章</span><div>${escapeHtml(runtime.context.unit)}</div></div>
+            <div class="goal-row"><span>点</span><div>${escapeHtml(runtime.context.topic)}</div></div>
+            <div class="goal-row"><span>度</span><div>课前掌握度 ${runtime.context.mastery}%</div></div>
+          </div>
+        </article>
+        <article class="card tip-card"><strong>怎么聊最有效</strong><p>可以写“我是这样想的……”“这一步为什么？”或“不要给答案，只提示第一步”。</p></article>
+      </aside>
+    </div>`;
 }
 
 function renderLessonComplete(runtime, lesson) {
@@ -342,6 +446,9 @@ function renderActiveLesson(runtime, lesson) {
 function renderClassroom() {
   const lesson = LESSONS.gcd;
   if (!state.activeLesson) return renderClassroomLanding(lesson);
+  if (state.activeLesson.mode === "ai") {
+    return state.activeLesson.completed ? renderAiLessonComplete(state.activeLesson) : renderAiLesson(state.activeLesson);
+  }
   if (state.activeLesson.completed) return renderLessonComplete(state.activeLesson, lesson);
   return renderActiveLesson(state.activeLesson, lesson);
 }
@@ -527,15 +634,206 @@ function render() {
     requestAnimationFrame(() => {
       const log = document.querySelector("#chat-log");
       if (log) log.scrollTop = log.scrollHeight;
-      document.querySelector("#lesson-answer")?.focus();
+      document.querySelector("#lesson-answer, #ai-lesson-answer")?.focus();
     });
   }
 }
 
 function startLesson() {
+  state.pendingLessonContext = null;
   state.activeLesson = newLessonRuntime(LESSONS.gcd);
   persist();
   render();
+}
+
+function unitForSkill(skillId) {
+  return CURRICULUM.find((unit) => unit.skills.some((skill) => skill.id === skillId));
+}
+
+function appendAiResponse(runtime, result) {
+  runtime.messages.push({
+    role: "assistant",
+    text: String(result.reply || "我们继续一步一步来。"),
+    math: String(result.math || "")
+  });
+  runtime.suggestedActions = Array.isArray(result.suggestedActions)
+    ? result.suggestedActions.slice(0, 3).map((item) => String(item).slice(0, 50))
+    : [];
+  runtime.records.push({
+    at: new Date().toISOString(),
+    intent: result.intent || "feedback",
+    masterySignal: result.masterySignal || "none",
+    shouldRecordEvidence: Boolean(result.shouldRecordEvidence)
+  });
+}
+
+async function performAiStart(runtimeId) {
+  const runtime = state.activeLesson;
+  if (!runtime || runtime.runtimeId !== runtimeId) return;
+  runtime.loading = true;
+  runtime.error = "";
+  runtime.pendingAction = "start";
+  persist();
+  render();
+  try {
+    const result = await startTutorSession(runtime.context, aiConfig);
+    if (state.activeLesson?.runtimeId !== runtimeId) return;
+    appendAiResponse(runtime, result);
+    runtime.pendingAction = "";
+  } catch (error) {
+    if (state.activeLesson?.runtimeId !== runtimeId) return;
+    runtime.error = error.message || "大模型服务暂时不可用";
+  } finally {
+    if (state.activeLesson?.runtimeId === runtimeId) {
+      runtime.loading = false;
+      persist();
+      render();
+    }
+  }
+}
+
+async function startAiLesson() {
+  if (!isAiConfigured(aiConfig)) {
+    openSettingsModal();
+    toast("请先填写并测试大模型服务地址");
+    return;
+  }
+  const skill = getSkill(state, state.classroomFocusSkillId) || getCurrentFocus(state) || getSkill(state, "gcd");
+  const unit = unitForSkill(skill?.id);
+  const mistake = state.pendingLessonContext?.mistakeId
+    ? state.mistakes.find((item) => item.id === state.pendingLessonContext.mistakeId)
+    : null;
+  const runtimeId = crypto.randomUUID();
+  state.activeLesson = {
+    mode: "ai",
+    runtimeId,
+    skillId: skill.id,
+    startedAt: new Date().toISOString(),
+    context: buildTutorContext({ state, skill, unit, mistake }),
+    messages: [],
+    records: [],
+    turns: 0,
+    hints: 0,
+    suggestedActions: [],
+    loading: false,
+    error: "",
+    pendingAction: "",
+    pendingInput: "",
+    completed: false,
+    sessionId: null,
+    evidenceRecorded: false
+  };
+  persist();
+  await performAiStart(runtimeId);
+}
+
+async function performAiTurn(runtimeId, answer, action = "message", alreadyAdded = false) {
+  const runtime = state.activeLesson;
+  if (!runtime || runtime.runtimeId !== runtimeId || runtime.loading) return;
+  if (!alreadyAdded) runtime.messages.push({ role: "student", text: answer });
+  runtime.loading = true;
+  runtime.error = "";
+  runtime.pendingAction = action;
+  runtime.pendingInput = answer;
+  if (action === "hint" && !alreadyAdded) runtime.hints += 1;
+  persist();
+  render();
+
+  try {
+    const result = await sendTutorMessage({
+      context: runtime.context,
+      messages: runtime.messages.slice(0, -1),
+      input: answer,
+      action
+    }, aiConfig);
+    if (state.activeLesson?.runtimeId !== runtimeId) return;
+    appendAiResponse(runtime, result);
+    runtime.turns += 1;
+    runtime.pendingAction = "";
+    runtime.pendingInput = "";
+  } catch (error) {
+    if (state.activeLesson?.runtimeId !== runtimeId) return;
+    runtime.error = error.message || "大模型服务暂时不可用";
+  } finally {
+    if (state.activeLesson?.runtimeId === runtimeId) {
+      runtime.loading = false;
+      persist();
+      render();
+    }
+  }
+}
+
+function submitAiMessage(answer, action = "message") {
+  const runtime = state.activeLesson;
+  if (!runtime || runtime.mode !== "ai" || runtime.loading) return;
+  return performAiTurn(runtime.runtimeId, answer, action);
+}
+
+function saveAiLessonSummary(runtime, summary) {
+  const signal = summary.masterySignal || "none";
+  if (signal !== "none" && state.skills[runtime.skillId]) {
+    state.skills[runtime.skillId] = applyEvidence(state.skills[runtime.skillId], {
+      correct: signal === "progress" || signal === "mastered",
+      hints: runtime.hints,
+      attempts: Math.max(1, runtime.turns),
+      date: isoDate()
+    });
+    runtime.evidenceRecorded = true;
+  }
+  const session = {
+    id: crypto.randomUUID(),
+    date: isoDate(),
+    title: runtime.context.topic,
+    duration: Math.max(1, Math.round((Date.now() - new Date(runtime.startedAt).getTime()) / 60_000)),
+    score: Number(summary.score) || 0,
+    independentRate: Number(summary.independentRate) || 0,
+    summary: String(summary.summary || "已完成一节开放式 AI 课堂。"),
+    strengths: Array.isArray(summary.strengths) ? summary.strengths : [],
+    needsWork: Array.isArray(summary.needsWork) ? summary.needsWork : [],
+    nextPlan: String(summary.nextPlan || "根据掌握证据安排下一次复习"),
+    records: runtime.records,
+    aiGenerated: true
+  };
+  state.sessions.push(session);
+  runtime.completed = true;
+  runtime.loading = false;
+  runtime.error = "";
+  runtime.pendingAction = "";
+  runtime.sessionId = session.id;
+  runtime.summary = summary;
+  state.pendingLessonContext = null;
+  state.lastOpened = isoDate();
+  persist();
+  render();
+}
+
+async function finishAiLesson() {
+  const runtime = state.activeLesson;
+  if (!runtime || runtime.mode !== "ai" || runtime.loading) return;
+  runtime.loading = true;
+  runtime.error = "";
+  runtime.pendingAction = "summary";
+  persist();
+  render();
+  try {
+    const summary = await summarizeTutorSession({ context: runtime.context, messages: runtime.messages }, aiConfig);
+    if (state.activeLesson?.runtimeId !== runtime.runtimeId) return;
+    saveAiLessonSummary(runtime, summary);
+  } catch (error) {
+    if (state.activeLesson?.runtimeId !== runtime.runtimeId) return;
+    runtime.loading = false;
+    runtime.error = error.message || "暂时无法生成课堂报告";
+    persist();
+    render();
+  }
+}
+
+function retryAiRequest() {
+  const runtime = state.activeLesson;
+  if (!runtime || runtime.mode !== "ai" || runtime.loading) return;
+  if (runtime.pendingAction === "start") return performAiStart(runtime.runtimeId);
+  if (runtime.pendingAction === "summary") return finishAiLesson();
+  if (runtime.pendingInput) return performAiTurn(runtime.runtimeId, runtime.pendingInput, runtime.pendingAction || "message", true);
 }
 
 function addLessonMessage(message) {
@@ -653,12 +951,46 @@ function openSettingsModal() {
         <div class="field"><label for="encouragement">鼓励风格</label><select id="encouragement" name="encouragement">${["自然简洁", "积极活泼", "沉稳克制"].map((value) => `<option ${state.preferences.encouragement === value ? "selected" : ""}>${value}</option>`).join("")}</select></div>
         <div class="field full"><label for="difficulty">难度目标</label><input id="difficulty" name="difficulty" value="${escapeHtml(state.preferences.difficulty)}" /></div>
         <div class="field full"><label for="new-pin">家长PIN</label><input id="new-pin" name="pin" type="password" inputmode="numeric" minlength="4" maxlength="8" value="${escapeHtml(state.profile.pin)}" /><small>仅用于区分孩子界面和家长设置，不等同于云端账户安全。</small></div>
+        <div class="field full ai-config-field">
+          <label for="ai-endpoint">大模型服务地址</label>
+          <div class="inline-field"><input id="ai-endpoint" name="aiEndpoint" type="text" inputmode="url" placeholder="https://math-ai-tutor-api.你的子域.workers.dev" value="${escapeHtml(aiConfig.endpoint)}" /><button class="button secondary" type="button" data-action="test-ai-connection">测试连接</button></div>
+          <small id="ai-connection-status">这里只保存服务地址；OpenAI API Key 必须放在服务端，绝不能填进网页。<a class="text-link" href="https://github.com/qilin70007/Math_AI_Grade6/blob/main/AI_SETUP.md" target="_blank" rel="noreferrer">查看一次性配置教程</a></small>
+        </div>
       </div>
       <div class="modal-actions"><button class="button secondary" type="button" data-action="close-modal">取消</button><button class="button primary" type="submit">保存设置</button></div>
     </form>`));
 }
 
+async function testAiConnection() {
+  const field = document.querySelector("#ai-endpoint");
+  const status = document.querySelector("#ai-connection-status");
+  const button = document.querySelector('[data-action="test-ai-connection"]');
+  try {
+    const endpoint = normalizeEndpoint(field?.value);
+    if (!endpoint) throw new Error("请先填写服务地址");
+    if (field) field.value = endpoint;
+    if (button) button.disabled = true;
+    if (status) status.textContent = "正在连接服务端……";
+    const result = await checkAiHealth({ endpoint });
+    if (!result.configured) throw new Error("服务可以访问，但还没有在服务端设置 OPENAI_API_KEY");
+    if (status) {
+      status.className = "connection-success";
+      status.textContent = `连接成功 · ${result.model || "模型已就绪"}。请再点击“保存设置”。`;
+    }
+  } catch (error) {
+    if (status) {
+      status.className = "connection-error";
+      status.textContent = error.message || "连接失败，请检查地址";
+    }
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
 function openMistakeForm() {
+  if (mistakePreviewUrl) URL.revokeObjectURL(mistakePreviewUrl);
+  mistakePreviewUrl = null;
+  pendingOcrResult = null;
   const unitOptions = TERM_OPTIONS.map((term) => {
     const units = CURRICULUM.filter((unit) => unit.term === term.id);
     return units.length ? `<optgroup label="${escapeHtml(term.label)}">${units.map((unit) => `<option value="${unit.id}">${escapeHtml(unit.number)} · ${escapeHtml(unit.title)}</option>`).join("")}</optgroup>` : "";
@@ -667,18 +999,105 @@ function openMistakeForm() {
     <form id="mistake-form">
       <div class="form-grid">
         <div class="field full"><label for="mistake-title">一句话概括错误</label><input id="mistake-title" name="title" placeholder="例如：异分母相加忘记先通分" required /></div>
-        <div class="field"><label for="mistake-source">来源</label><input id="mistake-source" name="source" placeholder="校内作业 / 练习册 / 试卷" required /></div>
+        <div class="field"><label for="mistake-source">来源</label><input id="mistake-source" name="source" value="拍照录入" placeholder="校内作业 / 练习册 / 试卷" required /></div>
         <div class="field"><label for="mistake-unit">所属单元</label><select id="mistake-unit" name="unitId">${unitOptions}</select></div>
         <div class="field"><label for="mistake-type">错因</label><select id="mistake-type" name="type">${ERROR_TYPES.map((type) => `<option>${type}</option>`).join("")}</select></div>
         <div class="field"><label for="mistake-answer">当时的答案</label><input id="mistake-answer" name="studentAnswer" placeholder="可留空" /></div>
-        <div class="field full"><label for="mistake-problem">题目文字</label><textarea id="mistake-problem" name="problem" placeholder="可手动输入题目，照片清晰时也可以暂时留空"></textarea></div>
+        <div class="field full"><label for="mistake-problem">题目文字</label><textarea id="mistake-problem" name="problem" placeholder="可手动输入题目，或拍照后让 AI 识别"></textarea></div>
         <div class="field full"><label for="mistake-analysis">目前认为的错因</label><textarea id="mistake-analysis" name="analysis" placeholder="例如：没有看清“最多”，错用了最小公倍数"></textarea></div>
+        <div class="field full"><label for="mistake-correction">正确方法</label><textarea id="mistake-correction" name="correction" placeholder="可先留空；AI 识别后会给出待核对的方法"></textarea></div>
         <div class="field full">
-          <label class="photo-drop" for="mistake-photo"><span>📷 点击拍照或选择原题图片<br /><small>图片只保存在本设备，可随完整备份导出</small></span><input id="mistake-photo" name="photo" type="file" accept="image/*" capture="environment" /></label>
+          <label class="photo-drop" for="mistake-photo"><span>📷 点击拍照或选择原题图片<br /><small>保存后的原图只留在本设备</small></span><input id="mistake-photo" name="photo" type="file" accept="image/jpeg,image/png,image/webp,image/gif" capture="environment" /></label>
+          <div id="mistake-photo-preview" class="ocr-preview" hidden></div>
         </div>
+        <div class="field full ocr-panel">
+          <div><strong>AI 拍照识题</strong><small>识别时，压缩后的照片会发送到已配置的模型服务。请先裁掉姓名、学校、班级和考号。</small></div>
+          <button class="button warm" id="mistake-ocr-button" type="button" data-action="run-mistake-ocr">识别题目并填写</button>
+          <p id="ocr-status" class="ocr-status">${isAiConfigured(aiConfig) ? "选择照片后开始识别；结果必须人工核对。" : "尚未连接模型服务，仍可手动录入并保存照片。"}</p>
+        </div>
+        <input type="hidden" id="ocr-skill-id" name="ocrSkillId" />
+        <input type="hidden" id="ocr-confidence" name="ocrConfidence" />
+        <input type="hidden" id="ocr-warnings" name="ocrWarnings" />
       </div>
       <div class="modal-actions"><button class="button secondary" type="button" data-action="close-modal">取消</button><button class="button primary" type="submit">保存并安排复习</button></div>
     </form>`));
+}
+
+function setFormValue(selector, value) {
+  const field = document.querySelector(selector);
+  if (field) field.value = String(value || "");
+}
+
+function matchedOcrLocation(result) {
+  let unit = CURRICULUM.find((item) => item.id === result.unitId);
+  let skill = unit?.skills.find((item) => item.id === result.skillId);
+  if (!skill && result.skillId) {
+    unit = CURRICULUM.find((item) => item.skills.some((candidate) => candidate.id === result.skillId)) || unit;
+    skill = unit?.skills.find((item) => item.id === result.skillId);
+  }
+  if (!unit) {
+    const hint = `${result.unitHint || ""} ${result.skillHint || ""}`;
+    unit = CURRICULUM.find((item) => hint.includes(item.title));
+  }
+  if (!skill && unit) {
+    const hint = `${result.skillHint || ""} ${result.title || ""}`;
+    skill = unit.skills.find((item) => hint.includes(item.title) || item.title.includes(result.skillHint || "__none__"));
+  }
+  return { unit, skill };
+}
+
+async function runMistakeOcr() {
+  if (!isAiConfigured(aiConfig)) {
+    toast("尚未连接模型服务，请先在家长设置中配置");
+    return;
+  }
+  const input = document.querySelector("#mistake-photo");
+  const file = input?.files?.[0];
+  if (!file) {
+    toast("请先拍照或选择题目图片");
+    return;
+  }
+  const button = document.querySelector("#mistake-ocr-button");
+  const status = document.querySelector("#ocr-status");
+  if (button) button.disabled = true;
+  if (status) {
+    status.className = "ocr-status working";
+    status.textContent = "正在压缩并识别题目，通常需要几秒到半分钟……";
+  }
+  try {
+    const imageDataUrl = await imageFileToDataUrl(file);
+    const result = await recognizeMathImage({
+      imageDataUrl,
+      catalog: compactCurriculumCatalog(CURRICULUM)
+    }, aiConfig);
+    pendingOcrResult = result;
+    const { unit, skill } = matchedOcrLocation(result);
+    setFormValue("#mistake-title", result.title || "拍照识别的数学错题");
+    setFormValue("#mistake-problem", result.problem);
+    setFormValue("#mistake-answer", result.studentAnswer);
+    setFormValue("#mistake-analysis", result.analysis);
+    setFormValue("#mistake-correction", result.correction);
+    if (unit) setFormValue("#mistake-unit", unit.id);
+    if (ERROR_TYPES.includes(result.errorType)) setFormValue("#mistake-type", result.errorType);
+    setFormValue("#ocr-skill-id", skill?.id || result.skillId || "");
+    setFormValue("#ocr-confidence", result.confidence);
+    setFormValue("#ocr-warnings", JSON.stringify(result.warnings || []));
+    const confidence = Math.round((Number(result.confidence) || 0) * 100);
+    const warningText = result.warnings?.length ? ` 提醒：${result.warnings.join("；")}` : "";
+    if (status) {
+      status.className = `ocr-status ${confidence < 75 ? "needs-review" : "success"}`;
+      status.textContent = `识别完成，置信度 ${confidence}%。请逐项核对后再保存。${warningText}`;
+    }
+    toast("题目已识别，请核对所有字段");
+  } catch (error) {
+    if (status) {
+      status.className = "ocr-status error";
+      status.textContent = error.message || "图片识别失败，请重试或手动录入";
+    }
+    toast(error.message || "图片识别失败");
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
 
 async function openMistakeDetail(id) {
@@ -686,7 +1105,7 @@ async function openMistakeDetail(id) {
   if (!mistake) return;
   const unit = CURRICULUM.find((item) => item.id === mistake.unitId);
   openModal(modalFrame("错题复习", `
-    <span class="tag ${mistake.status === "review" ? "purple" : "warm"}">${mistake.status === "mastered" ? "已掌握" : mistake.status === "review" ? "待复习" : "练习中"}</span>
+    <span class="tag ${mistake.status === "review" ? "purple" : "warm"}">${mistake.status === "mastered" ? "已掌握" : mistake.status === "review" ? "待复习" : "练习中"}</span>${mistake.ocr?.confidence != null ? ` <span class="tag">OCR ${Math.round(mistake.ocr.confidence * 100)}%</span>` : ""}
     <h2 style="margin:12px 0 5px;font-size:22px">${escapeHtml(mistake.title)}</h2>
     <p style="margin:0;color:var(--muted);font-size:12px">${escapeHtml(unit?.title || "未分类")} · ${escapeHtml(mistake.source)} · 已复习${mistake.reviewCount || 0}次</p>
     ${mistake.photoId ? `<div id="mistake-photo-slot" class="detail-block" style="text-align:center">正在读取原题图片……</div>` : ""}
@@ -694,15 +1113,20 @@ async function openMistakeDetail(id) {
     <div class="detail-block"><h3>当时的答案</h3><p>${escapeHtml(mistake.studentAnswer || "未记录")}</p></div>
     <div class="detail-block"><h3>错误原因</h3><p>${escapeHtml(mistake.analysis || "待家长或AI课堂进一步分析")}</p></div>
     <div class="detail-block"><h3>正确方法</h3><p>${escapeHtml(mistake.correction || "先重新独立完成，再对照标准解法；之后还要完成一道变式题。")}</p></div>
+    ${mistake.ocr?.warnings?.length ? `<div class="detail-block warning-block"><h3>识别提醒</h3><p>${mistake.ocr.warnings.map(escapeHtml).join("\n")}</p></div>` : ""}
     <div class="modal-actions" style="justify-content:space-between">
       <button class="button danger small" type="button" data-action="delete-mistake" data-id="${mistake.id}">删除</button>
-      <div class="button-row"><button class="button secondary" type="button" data-action="mark-mistake-learning" data-id="${mistake.id}">仍需复习</button><button class="button primary" type="button" data-action="mark-mistake-mastered" data-id="${mistake.id}">变式题已独立做对</button></div>
+      <div class="button-row"><button class="button secondary" type="button" data-action="learn-mistake-with-ai" data-id="${mistake.id}">AI 讲解这道题</button><button class="button secondary" type="button" data-action="mark-mistake-learning" data-id="${mistake.id}">仍需复习</button><button class="button primary" type="button" data-action="mark-mistake-mastered" data-id="${mistake.id}">变式题已独立做对</button></div>
     </div>`));
   if (mistake.photoId) {
     try {
       const url = await getMistakeImage(mistake.photoId);
       const slot = document.querySelector("#mistake-photo-slot");
-      if (slot && url) slot.innerHTML = `<img class="photo-preview" src="${url}" alt="错题原图" />`;
+      if (slot && url) {
+        if (mistakePreviewUrl) URL.revokeObjectURL(mistakePreviewUrl);
+        mistakePreviewUrl = url;
+        slot.innerHTML = `<img class="photo-preview" src="${url}" alt="错题原图" />`;
+      }
       else if (slot) slot.textContent = "原题图片未找到。";
     } catch {
       const slot = document.querySelector("#mistake-photo-slot");
@@ -724,7 +1148,7 @@ function openSkillDetail(id) {
     </div>
     <div class="detail-block"><h3>状态说明</h3><p>掌握度综合独立正确、提示次数、解释质量和延迟复测计算。单次答对只增加一条证据，不会直接变成“稳定掌握”。</p></div>
     <div class="detail-block"><h3>课程规划标签</h3><p>${skill.currentFocus ? "当前重点" : skill.nextUp ? "下一步学习" : skill.reviewDue ? "到期复习" : "暂无特殊标签"}${skill.parentLocked ? "；家长已锁定" : ""}</p></div>
-    <div class="modal-actions"><button class="button secondary" type="button" data-action="close-modal">关闭</button>${skill.id === "gcd" ? '<button class="button primary" type="button" data-action="go-classroom">进入对应课堂</button>' : ""}</div>`));
+    <div class="modal-actions"><button class="button secondary" type="button" data-action="close-modal">关闭</button><button class="button primary" type="button" data-action="learn-skill-with-ai" data-id="${skill.id}">用 AI 学这个知识点</button></div>`));
 }
 
 function openReport(id) {
@@ -740,7 +1164,7 @@ function openReport(id) {
     <div class="detail-block"><h3>做得好的</h3><p>${(report.strengths || []).map((item) => `✓ ${escapeHtml(item)}`).join("\n") || "暂无记录"}</p></div>
     <div class="detail-block"><h3>还要继续</h3><p>${(report.needsWork || []).map((item) => `• ${escapeHtml(item)}`).join("\n") || "暂无"}</p></div>
     <div class="detail-block"><h3>下一步计划</h3><p>${escapeHtml(report.nextPlan || "由系统根据到期复习自动安排")}</p></div>
-    <div class="detail-block"><h3>家长2分钟提问</h3><p>可以问：“今天什么情况下要用最大公因数？你能自己举一个生活中的例子吗？”只听孩子解释，不需要再布置一套题。</p></div>
+    <div class="detail-block"><h3>家长2分钟提问</h3><p>可以问：“你能不看笔记，讲讲‘${escapeHtml(report.title)}’最关键的一步吗？”只听孩子解释，不需要再布置一套题。</p></div>
     <div class="modal-actions"><button class="button secondary" type="button" data-action="print-report">打印</button><button class="button primary" type="button" data-action="close-modal">完成</button></div>`));
 }
 
@@ -771,6 +1195,13 @@ document.addEventListener("click", async (event) => {
     closeModal();
     location.hash = "classroom";
   }
+  if (action === "open-ai-settings") {
+    closeModal();
+    location.hash = "parent";
+    toast("请家长验证 PIN 后，在“学习设置”中连接模型服务");
+  }
+  if (action === "test-ai-connection") await testAiConnection();
+  if (action === "start-ai-lesson") await startAiLesson();
   if (action === "start-lesson") startLesson();
   if (action === "pause-lesson") location.hash = "today";
   if (action === "reset-lesson") {
@@ -778,9 +1209,16 @@ document.addEventListener("click", async (event) => {
     persist();
     render();
   }
+  if (action === "finish-ai-lesson") await finishAiLesson();
+  if (action === "retry-ai-request") await retryAiRequest();
+  if (action === "ai-quick-message") {
+    const message = String(actionElement.dataset.message || "").trim();
+    if (message) await submitAiMessage(message, message.includes("提示") ? "hint" : "message");
+  }
   if (action === "lesson-hint") giveHint(false);
   if (action === "lesson-dont-know") giveHint(true);
   if (action === "add-mistake") openMistakeForm();
+  if (action === "run-mistake-ocr") await runMistakeOcr();
   if (action === "filter-mistakes") {
     mistakeFilter = actionElement.dataset.filter;
     render();
@@ -819,6 +1257,26 @@ document.addEventListener("click", async (event) => {
     render();
   }
   if (action === "open-skill") openSkillDetail(actionElement.dataset.id);
+  if (action === "learn-skill-with-ai") {
+    state.classroomFocusSkillId = actionElement.dataset.id;
+    state.pendingLessonContext = null;
+    state.activeLesson = null;
+    persist();
+    closeModal();
+    location.hash = "classroom";
+  }
+  if (action === "learn-mistake-with-ai") {
+    const mistake = state.mistakes.find((item) => item.id === actionElement.dataset.id);
+    const unit = mistake ? CURRICULUM.find((item) => item.id === mistake.unitId) : null;
+    if (mistake) {
+      state.classroomFocusSkillId = mistake.skillId || unit?.skills[0]?.id || state.classroomFocusSkillId;
+      state.pendingLessonContext = { mistakeId: mistake.id };
+      state.activeLesson = null;
+      persist();
+      closeModal();
+      location.hash = "classroom";
+    }
+  }
   if (action === "lock-parent") {
     sessionStorage.removeItem("math-ai-grade6:parent-unlocked");
     render();
@@ -839,6 +1297,11 @@ document.addEventListener("submit", async (event) => {
   if (form.id === "answer-form") {
     const answer = String(data.get("answer") || "").trim();
     if (answer) submitLessonAnswer(answer);
+  }
+
+  if (form.id === "ai-answer-form") {
+    const answer = String(data.get("answer") || "").trim();
+    if (answer) await submitAiMessage(answer);
   }
 
   if (form.id === "pin-form") {
@@ -870,6 +1333,12 @@ document.addEventListener("submit", async (event) => {
   }
 
   if (form.id === "settings-form") {
+    try {
+      aiConfig = saveAiConfig({ endpoint: data.get("aiEndpoint") });
+    } catch (error) {
+      toast(error.message || "大模型服务地址格式不正确");
+      return;
+    }
     state.profile.dailyMinutes = Number(data.get("dailyMinutes"));
     state.profile.pin = String(data.get("pin"));
     state.preferences = {
@@ -889,14 +1358,22 @@ document.addEventListener("submit", async (event) => {
     const file = data.get("photo");
     let photoId = null;
     if (file instanceof File && file.size > 0) {
-      if (file.size > 8 * 1024 * 1024) {
-        toast("图片超过8MB，请压缩后再试");
+      if (file.size > 12 * 1024 * 1024) {
+        toast("原图超过12MB，请先裁剪后再试");
         return;
       }
       photoId = await saveMistakeImage(file);
     }
     const unit = CURRICULUM.find((item) => item.id === data.get("unitId"));
-    const skillId = unit?.skills[0]?.id || null;
+    const suggestedSkillId = String(data.get("ocrSkillId") || "");
+    const skillId = unit?.skills.some((item) => item.id === suggestedSkillId) ? suggestedSkillId : unit?.skills[0]?.id || null;
+    let ocrWarnings = [];
+    try {
+      ocrWarnings = JSON.parse(String(data.get("ocrWarnings") || "[]"));
+    } catch {
+      ocrWarnings = [];
+    }
+    const ocrConfidence = Number(data.get("ocrConfidence"));
     state.mistakes.unshift({
       id: crypto.randomUUID(),
       title: String(data.get("title") || "未命名错题").trim(),
@@ -907,12 +1384,18 @@ document.addEventListener("submit", async (event) => {
       problem: String(data.get("problem") || "").trim(),
       studentAnswer: String(data.get("studentAnswer") || "").trim(),
       analysis: String(data.get("analysis") || "").trim(),
-      correction: "",
+      correction: String(data.get("correction") || "").trim(),
       status: "review",
       reviewCount: 0,
       createdAt: isoDate(),
       nextReview: isoDate(),
-      photoId
+      photoId,
+      ocr: Number.isFinite(ocrConfidence) && String(data.get("ocrConfidence")) !== "" ? {
+        confidence: Math.max(0, Math.min(1, ocrConfidence)),
+        warnings: Array.isArray(ocrWarnings) ? ocrWarnings : [],
+        recognizedAt: new Date().toISOString(),
+        modelSuggestedSkillId: pendingOcrResult?.skillId || ""
+      } : null
     });
     persist();
     closeModal();
@@ -922,6 +1405,38 @@ document.addEventListener("submit", async (event) => {
 });
 
 document.addEventListener("change", async (event) => {
+  if (event.target.id === "mistake-photo") {
+    const file = event.target.files?.[0];
+    const preview = document.querySelector("#mistake-photo-preview");
+    const status = document.querySelector("#ocr-status");
+    pendingOcrResult = null;
+    setFormValue("#ocr-skill-id", "");
+    setFormValue("#ocr-confidence", "");
+    setFormValue("#ocr-warnings", "");
+    if (mistakePreviewUrl) URL.revokeObjectURL(mistakePreviewUrl);
+    mistakePreviewUrl = null;
+    if (!file) {
+      if (preview) preview.hidden = true;
+      return;
+    }
+    if (file.size > 12 * 1024 * 1024) {
+      event.target.value = "";
+      if (preview) preview.hidden = true;
+      toast("图片超过12MB，请先裁剪题目区域");
+      return;
+    }
+    mistakePreviewUrl = URL.createObjectURL(file);
+    if (preview) {
+      preview.hidden = false;
+      preview.innerHTML = `<img src="${mistakePreviewUrl}" alt="待识别的题目照片" />`;
+    }
+    if (status) {
+      status.className = "ocr-status";
+      status.textContent = isAiConfigured(aiConfig) ? "照片已准备好，点击“识别题目并填写”。" : "照片可正常保存；连接模型服务后才能自动识别。";
+    }
+    return;
+  }
+
   if (event.target.id !== "backup-file") return;
   const file = event.target.files?.[0];
   if (!file) return;

@@ -1,6 +1,6 @@
 import { CURRICULUM, DEFAULT_MISTAKES, STATUS_META } from "./data.js";
 
-export const APP_STATE_VERSION = 2;
+export const APP_STATE_VERSION = 3;
 
 export function isoDate(date = new Date()) {
   const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
@@ -256,6 +256,8 @@ export function createDefaultState(now = new Date()) {
     mistakes,
     sessions,
     activeLesson: null,
+    classroomFocusSkillId: "gcd",
+    pendingLessonContext: null,
     streak: 4,
     lastOpened: isoDate(now),
     createdAt: new Date(now).toISOString()
@@ -268,6 +270,7 @@ export function hydrateState(raw, now = new Date()) {
   return {
     ...defaults,
     ...raw,
+    version: APP_STATE_VERSION,
     profile: { ...defaults.profile, ...(raw.profile || {}) },
     preferences: { ...defaults.preferences, ...(raw.preferences || {}) },
     skills: { ...defaults.skills, ...(raw.skills || {}) },
