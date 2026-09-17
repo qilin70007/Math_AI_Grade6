@@ -1,5 +1,17 @@
-const AI_CONFIG_KEY = "math-ai-grade6:ai-config:v1";
+const AI_CONFIG_KEY = "math-ai-grade6:ai-config:v2";
+const LEGACY_AI_CONFIG_KEY = "math-ai-grade6:ai-config:v1";
 const REQUEST_TIMEOUT = 70_000;
+
+export const AI_PROVIDER_OPTIONS = Object.freeze([
+  Object.freeze({ id: "auto", label: "自动选择" }),
+  Object.freeze({ id: "openai", label: "OpenAI" }),
+  Object.freeze({ id: "deepseek", label: "DeepSeek" }),
+  Object.freeze({ id: "kimi", label: "Kimi" }),
+  Object.freeze({ id: "glm", label: "智谱 GLM" }),
+  Object.freeze({ id: "hunyuan", label: "腾讯混元" })
+]);
+
+const AI_PROVIDER_IDS = new Set(AI_PROVIDER_OPTIONS.map((item) => item.id));
 
 function safeStorage() {
   try {
@@ -37,19 +49,37 @@ export function defaultAiEndpoint(locationValue = globalThis.location) {
   return hostname === "localhost" || hostname === "127.0.0.1" ? "http://localhost:8787" : "";
 }
 
+export function normalizeProvider(value) {
+  const id = String(value || "auto").trim().toLowerCase();
+  return AI_PROVIDER_IDS.has(id) ? id : "auto";
+}
+
+export function providerLabel(value) {
+  const id = normalizeProvider(value);
+  return AI_PROVIDER_OPTIONS.find((item) => item.id === id)?.label || "自动选择";
+}
+
 export function getAiConfig(storage = safeStorage()) {
-  const fallback = { endpoint: defaultAiEndpoint() };
+  const fallback = { endpoint: defaultAiEndpoint(), tutorProvider: "auto", ocrProvider: "auto" };
   if (!storage) return fallback;
   try {
-    const saved = JSON.parse(storage.getItem(AI_CONFIG_KEY) || "null");
-    return { endpoint: normalizeEndpoint(saved?.endpoint || fallback.endpoint) };
+    const saved = JSON.parse(storage.getItem(AI_CONFIG_KEY) || storage.getItem(LEGACY_AI_CONFIG_KEY) || "null");
+    return {
+      endpoint: normalizeEndpoint(saved?.endpoint || fallback.endpoint),
+      tutorProvider: normalizeProvider(saved?.tutorProvider),
+      ocrProvider: normalizeProvider(saved?.ocrProvider)
+    };
   } catch {
     return fallback;
   }
 }
 
 export function saveAiConfig(config, storage = safeStorage()) {
-  const saved = { endpoint: normalizeEndpoint(config?.endpoint) };
+  const saved = {
+    endpoint: normalizeEndpoint(config?.endpoint),
+    tutorProvider: normalizeProvider(config?.tutorProvider),
+    ocrProvider: normalizeProvider(config?.ocrProvider)
+  };
   if (storage) storage.setItem(AI_CONFIG_KEY, JSON.stringify(saved));
   return saved;
 }
@@ -136,21 +166,21 @@ export function checkAiHealth(config = getAiConfig()) {
 export function startTutorSession(context, config = getAiConfig()) {
   return requestJson("/api/tutor", {
     method: "POST",
-    body: { action: "start", context, messages: [] }
+    body: { action: "start", provider: normalizeProvider(config?.tutorProvider), context, messages: [] }
   }, config);
 }
 
 export function sendTutorMessage({ context, messages, input, action = "message" }, config = getAiConfig()) {
   return requestJson("/api/tutor", {
     method: "POST",
-    body: { action, context, messages, input }
+    body: { action, provider: normalizeProvider(config?.tutorProvider), context, messages, input }
   }, config);
 }
 
 export function summarizeTutorSession({ context, messages }, config = getAiConfig()) {
   return requestJson("/api/tutor", {
     method: "POST",
-    body: { action: "summary", context, messages }
+    body: { action: "summary", provider: normalizeProvider(config?.tutorProvider), context, messages }
   }, config);
 }
 
@@ -158,7 +188,7 @@ export function recognizeMathImage({ imageDataUrl, catalog }, config = getAiConf
   return requestJson("/api/ocr", {
     method: "POST",
     timeout: 90_000,
-    body: { imageDataUrl, catalog }
+    body: { provider: normalizeProvider(config?.ocrProvider), imageDataUrl, catalog }
   }, config);
 }
 

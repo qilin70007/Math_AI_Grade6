@@ -1,56 +1,104 @@
-# 开启开放式 AI 课堂与拍照识题
+# 开启多模型 AI 课堂与拍照识题
 
-网页仍部署在 GitHub Pages；模型请求经 Cloudflare Worker 转发。这样 `OPENAI_API_KEY` 只存在服务端，不会出现在浏览器代码、GitHub Pages 或学习备份中。
+数芽支持在家长设置中分别选择“AI 教学模型”和“拍照识题模型”。网页仍部署在 GitHub Pages，所有厂商的 API Key 只保存在 Cloudflare Worker；密钥不会进入浏览器、GitHub Pages 或学习数据备份。
 
-## 准备
+当前内置以下入口（`HY` 按腾讯混元实现）：
 
-1. 在 [OpenAI API Keys](https://platform.openai.com/api-keys) 创建 API Key，并确认 API 账户可正常计费。
-2. 注册或登录 [Cloudflare](https://dash.cloudflare.com/)。个人使用可先从 Workers 免费额度开始。
-3. 电脑安装 Node.js 20 或更高版本，并下载本仓库。
+| 提供商 | AI教学 | 拍照识题 | 默认模型 | 服务端密钥名 |
+|---|---|---|---|---|
+| OpenAI | 支持 | 支持 | `gpt-5.6-terra` | `OPENAI_API_KEY` |
+| DeepSeek | 支持 | 默认不开放 | `deepseek-chat` | `DEEPSEEK_API_KEY` |
+| Kimi | 支持 | 支持 | `kimi-k3` | `KIMI_API_KEY` |
+| 智谱 GLM | 支持 | 支持 | `glm-5.3-flash` | `GLM_API_KEY` |
+| 腾讯混元 | 支持 | 支持 | `hunyuan-turbos-latest` / `hunyuan-turbos-vision` | `HUNYUAN_API_KEY` |
 
-## 一次性部署
+DeepSeek 默认入口只用于文字教学。若其官方账户以后提供可用的视觉模型，可在 Worker 中另设 `DEEPSEEK_VISION_MODEL` 后再用于 OCR；未配置时，数芽会明确提示，不会把图片误发给文字模型。
 
-在仓库目录执行：
+模型与接口会更新，仓库中的名称均可在 `worker/wrangler.toml` 中修改。可参考各厂商官方文档：[OpenAI](https://platform.openai.com/docs)、[DeepSeek](https://api-docs.deepseek.com/)、[Kimi](https://platform.kimi.ai/docs/overview)、[智谱 GLM](https://docs.bigmodel.cn/cn/guide/start/introduction)、[腾讯混元](https://cloud.tencent.com/document/product/1729/111007)。
+
+## 一、首次部署 Worker
+
+准备好 Cloudflare 账户和至少一个厂商的 API Key。在仓库目录打开终端：
 
 ```bash
 cd worker
 npm install
 npx wrangler login
 npm run deploy
-npx wrangler secret put OPENAI_API_KEY
 ```
 
-最后一条命令会提示输入密钥。直接粘贴 API Key；不要把密钥写进 `wrangler.toml`，也不要提交到 GitHub。
-
-部署完成后会得到类似下面的地址：
+部署后会得到类似地址：
 
 ```text
 https://math-ai-tutor-api.<你的 Cloudflare 子域>.workers.dev
 ```
 
-可先打开 `<服务地址>/health`。正常结果应包含：
+## 二、添加你准备使用的模型密钥
 
-```json
-{ "ok": true, "configured": true }
+只执行需要的厂商，不必五个全部配置。例如只使用 Kimi：
+
+```bash
+npx wrangler secret put KIMI_API_KEY
 ```
 
-## 在数芽里连接
+同时配置 DeepSeek、GLM 和混元：
 
-1. 打开 [数芽](https://qilin70007.github.io/Math_AI_Grade6/)。
+```bash
+npx wrangler secret put DEEPSEEK_API_KEY
+npx wrangler secret put GLM_API_KEY
+npx wrangler secret put HUNYUAN_API_KEY
+```
+
+使用 OpenAI：
+
+```bash
+npx wrangler secret put OPENAI_API_KEY
+```
+
+每条命令都会提示粘贴对应密钥。密钥不要写入 `wrangler.toml`、网页设置或 GitHub。添加完成后可打开 `<Worker地址>/health`，返回结果中的 `providers` 会分别显示哪些厂商已配置，以及是否支持 `tutor` 和 `ocr`。
+
+## 三、在数芽中选择模型
+
+1. 打开[数芽](https://qilin70007.github.io/Math_AI_Grade6/)。
 2. 进入“家长”，初始 PIN 为 `2609`。
 3. 点击“学习设置”。
-4. 将 Worker 地址粘贴到“大模型服务地址”。
-5. 点击“测试连接”，看到“连接成功”后再点击“保存设置”。
+4. 填入 Worker 地址。
+5. 分别选择“AI教学模型”和“拍照识题模型”。也可保留“自动选择”。
+6. 点击“测试连接”。看到两个用途都连接成功后，点击“保存设置”。
 
-现在可以：
+可以组合使用，例如：
 
-- 在“知识图”中点任意知识点，选择“用 AI 学这个知识点”；
-- 在“错题”中录入照片，点击“识别题目并填写”；
-- 在错题详情中点击“AI 讲解这道题”。
+- DeepSeek 负责文字教学，Kimi 负责拍照识题；
+- Kimi 同时负责教学和 OCR；
+- GLM 负责教学，腾讯混元负责 OCR；
+- 选择“自动选择”，由服务端从已配置且支持该能力的模型中选择。
 
-## 本地联调
+## 四、修改默认模型或接口地址
 
-复制 `worker/.dev.vars.example` 为 `worker/.dev.vars`，在本机文件中填入 API Key；`.dev.vars` 已被忽略，不会提交。
+常用模型名在 `worker/wrangler.toml` 中：
+
+```toml
+DEFAULT_TUTOR_PROVIDER = "openai"
+DEFAULT_OCR_PROVIDER = "openai"
+OPENAI_MODEL = "gpt-5.6-terra"
+DEEPSEEK_MODEL = "deepseek-chat"
+KIMI_MODEL = "kimi-k3"
+GLM_MODEL = "glm-5.3-flash"
+HUNYUAN_MODEL = "hunyuan-turbos-latest"
+HUNYUAN_VISION_MODEL = "hunyuan-turbos-vision"
+```
+
+修改后重新执行：
+
+```bash
+npm run deploy
+```
+
+如需覆盖默认 API 地址，可在 `[vars]` 中增加对应变量：`OPENAI_BASE_URL`、`DEEPSEEK_BASE_URL`、`KIMI_BASE_URL`、`GLM_BASE_URL` 或 `HUNYUAN_BASE_URL`。例如使用中国大陆版 Moonshot 账户时，可按该账户控制台说明设置 `KIMI_BASE_URL`；不要混用不同站点签发的密钥和接口地址。
+
+## 五、本地联调
+
+复制 `worker/.dev.vars.example` 为 `worker/.dev.vars`，只填写本次要测试的密钥；`.dev.vars` 已被 Git 忽略。
 
 ```bash
 # 终端 1
@@ -64,17 +112,10 @@ npm start
 
 本地网页会默认连接 `http://localhost:8787`。
 
-## 可调整项
-
-`worker/wrangler.toml` 中：
-
-- `OPENAI_MODEL`：默认 `gpt-5.6-terra`；可换成账户可用且支持图片输入、结构化输出的模型。
-- `ALLOWED_ORIGINS`：允许访问接口的网页来源。若以后换域名，需要把新域名加入逗号分隔列表。
-
 ## 隐私与费用
 
-- 前端不会发送学生称呼、学校或家长 PIN；服务端也会再次按白名单清理上下文。
-- 图片会在浏览器压缩后发送给模型识别。拍照时应先避开或裁掉姓名、班级、学校和考号。
-- 模型请求设置为 `store: false`，错题原图仍只保存在当前设备的 IndexedDB 中。
-- AI 识别可能出错，题干、符号、答案、错因和知识点都必须由家长或学生核对后再保存。
-- OpenAI API 按实际用量计费；Cloudflare Worker 是否收费取决于账户套餐和调用量。
+- 前端不会发送学生称呼、学校或家长 PIN；服务端还会再次按白名单清理上下文。
+- 图片会在浏览器压缩后发送给家长所选的 OCR 模型。拍照时仍应裁掉姓名、学校、班级和考号。
+- OpenAI 请求设置为 `store: false`；其他厂商的数据保留与训练政策以各自账户条款为准。
+- OCR 结果必须人工核对后才入库，数学答案不能只依赖模型判断。
+- 每个厂商独立计费、限速；“自动选择”不会跨厂商同时重复调用。

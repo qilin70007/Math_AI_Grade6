@@ -1,10 +1,78 @@
-const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
 const DEFAULT_MODEL = "gpt-5.6-terra";
 const MAX_REQUEST_BYTES = 8_000_000;
 const MAX_IMAGE_DATA_URL = 6_500_000;
 const RATE_WINDOW_MS = 60_000;
 const RATE_LIMIT = 36;
 const requestBuckets = new Map();
+
+export const PROVIDER_DEFINITIONS = Object.freeze({
+  openai: Object.freeze({
+    id: "openai",
+    label: "OpenAI",
+    protocol: "responses",
+    apiKeyEnv: "OPENAI_API_KEY",
+    baseUrlEnv: "OPENAI_BASE_URL",
+    defaultBaseUrl: "https://api.openai.com/v1",
+    tutorModelEnv: "OPENAI_MODEL",
+    defaultTutorModel: DEFAULT_MODEL,
+    visionModelEnv: "OPENAI_VISION_MODEL",
+    defaultVisionModel: "@tutor"
+  }),
+  deepseek: Object.freeze({
+    id: "deepseek",
+    label: "DeepSeek",
+    protocol: "chat_completions",
+    jsonMode: true,
+    apiKeyEnv: "DEEPSEEK_API_KEY",
+    baseUrlEnv: "DEEPSEEK_BASE_URL",
+    defaultBaseUrl: "https://api.deepseek.com/v1",
+    tutorModelEnv: "DEEPSEEK_MODEL",
+    defaultTutorModel: "deepseek-chat",
+    visionModelEnv: "DEEPSEEK_VISION_MODEL",
+    defaultVisionModel: ""
+  }),
+  kimi: Object.freeze({
+    id: "kimi",
+    label: "Kimi",
+    protocol: "chat_completions",
+    jsonMode: true,
+    apiKeyEnv: "KIMI_API_KEY",
+    baseUrlEnv: "KIMI_BASE_URL",
+    defaultBaseUrl: "https://api.moonshot.ai/v1",
+    tutorModelEnv: "KIMI_MODEL",
+    defaultTutorModel: "kimi-k3",
+    visionModelEnv: "KIMI_VISION_MODEL",
+    defaultVisionModel: "@tutor"
+  }),
+  glm: Object.freeze({
+    id: "glm",
+    label: "智谱 GLM",
+    protocol: "chat_completions",
+    jsonMode: true,
+    apiKeyEnv: "GLM_API_KEY",
+    baseUrlEnv: "GLM_BASE_URL",
+    defaultBaseUrl: "https://open.bigmodel.cn/api/paas/v4",
+    tutorModelEnv: "GLM_MODEL",
+    defaultTutorModel: "glm-5.3-flash",
+    visionModelEnv: "GLM_VISION_MODEL",
+    defaultVisionModel: "@tutor"
+  }),
+  hunyuan: Object.freeze({
+    id: "hunyuan",
+    label: "腾讯混元",
+    protocol: "chat_completions",
+    jsonMode: false,
+    apiKeyEnv: "HUNYUAN_API_KEY",
+    baseUrlEnv: "HUNYUAN_BASE_URL",
+    defaultBaseUrl: "https://api.hunyuan.cloud.tencent.com/v1",
+    tutorModelEnv: "HUNYUAN_MODEL",
+    defaultTutorModel: "hunyuan-turbos-latest",
+    visionModelEnv: "HUNYUAN_VISION_MODEL",
+    defaultVisionModel: "hunyuan-turbos-vision"
+  })
+});
+
+const PROVIDER_IDS = Object.keys(PROVIDER_DEFINITIONS);
 
 export const TUTOR_RESPONSE_SCHEMA = {
   type: "object",
@@ -108,6 +176,96 @@ class HttpError extends Error {
     super(message);
     this.status = status;
   }
+}
+
+function cleanBaseUrl(value, fallback) {
+  return String(value || fallback || "").trim().replace(/\/+$/, "");
+}
+
+function tutorModel(definition, env) {
+  return limitText(env[definition.tutorModelEnv] || definition.defaultTutorModel, 120);
+}
+
+function visionModel(definition, env) {
+  const configured = limitText(env[definition.visionModelEnv], 120);
+  if (configured) return configured;
+  return definition.defaultVisionModel === "@tutor"
+    ? tutorModel(definition, env)
+    : definition.defaultVisionModel;
+}
+
+function providerState(definition, env) {
+  const configured = Boolean(env[definition.apiKeyEnv]);
+  const tutor = tutorModel(definition, env);
+  const ocr = visionModel(definition, env);
+  return {
+    id: definition.id,
+    label: definition.label,
+    configured,
+    capabilities: {
+      tutor: configured && Boolean(tutor),
+      ocr: configured && Boolean(ocr)
+    },
+    models: {
+      tutor,
+      ocr
+    }
+  };
+}
+
+export function listProviderStates(env = {}) {
+  return Object.values(PROVIDER_DEFINITIONS).map((definition) => providerState(definition, env));
+}
+
+function requestedProvider(value) {
+  const id = limitText(value, 30).toLowerCase();
+  return PROVIDER_IDS.includes(id) ? id : "auto";
+}
+
+function preferredProviderId(env, capability) {
+  const value = capability === "ocr"
+    ? env.DEFAULT_OCR_PROVIDER
+    : env.DEFAULT_TUTOR_PROVIDER || env.AI_PROVIDER;
+  return requestedProvider(value);
+}
+
+export function resolveProvider(env, requested, capability) {
+  const selected = requestedProvider(requested);
+  const states = listProviderStates(env);
+  if (selected !== "auto") {
+    const state = states.find((item) => item.id === selected);
+    if (!state?.configured) {
+      throw new HttpError(503, `${state?.label || selected} 尚未在服务端配置 API Key`);
+    }
+    if (!state.capabilities[capability]) {
+      const suffix = capability === "ocr" ? "支持图片的视觉模型" : "教学模型";
+      throw new HttpError(503, `${state.label} 尚未配置${suffix}`);
+    }
+    return {
+      ...state,
+      definition: PROVIDER_DEFINITIONS[state.id],
+      model: state.models[capability],
+      capability
+    };
+  }
+
+  const preferred = preferredProviderId(env, capability);
+  const order = [preferred, "openai", "kimi", "glm", "hunyuan", "deepseek"]
+    .filter((id, index, values) => id !== "auto" && values.indexOf(id) === index);
+  const state = order
+    .map((id) => states.find((item) => item.id === id))
+    .find((item) => item?.capabilities[capability]);
+  if (!state) {
+    throw new HttpError(503, capability === "ocr"
+      ? "服务端尚未配置可用于拍照识题的视觉模型"
+      : "服务端尚未配置可用于 AI 教学的大模型");
+  }
+  return {
+    ...state,
+    definition: PROVIDER_DEFINITIONS[state.id],
+    model: state.models[capability],
+    capability
+  };
 }
 
 function enforceRateLimit(request) {
@@ -215,38 +373,186 @@ function outputText(response) {
   return "";
 }
 
-async function callOpenAI(env, body) {
-  if (!env.OPENAI_API_KEY) throw new HttpError(503, "服务端尚未配置 OPENAI_API_KEY");
-  const response = await fetch(OPENAI_RESPONSES_URL, {
+function chatOutputText(response) {
+  const content = response?.choices?.[0]?.message?.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.map((item) => typeof item === "string" ? item : item?.text || "").join("");
+  }
+  return "";
+}
+
+function parseJsonOutput(text) {
+  const clean = String(text || "")
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/, "")
+    .trim();
+  try {
+    return JSON.parse(clean);
+  } catch {
+    const start = clean.indexOf("{");
+    const end = clean.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      try {
+        return JSON.parse(clean.slice(start, end + 1));
+      } catch {
+        // Fall through to the user-facing format error below.
+      }
+    }
+  }
+  throw new HttpError(502, "模型返回格式异常，请重试");
+}
+
+function defaultForField(field, schema) {
+  if (field === "intent") return "feedback";
+  if (field === "masterySignal") return "none";
+  if (field === "errorType") return "检查不足";
+  if (field === "success" || schema.type === "boolean") return false;
+  if (schema.type === "array") return [];
+  if (schema.type === "number" || schema.type === "integer") return schema.minimum || 0;
+  return "";
+}
+
+function conformToSchema(value, schema, field = "") {
+  if (schema.type === "object") {
+    const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    return Object.fromEntries(Object.entries(schema.properties || {}).map(([key, child]) => [
+      key,
+      conformToSchema(source[key] ?? defaultForField(key, child), child, key)
+    ]));
+  }
+  if (schema.type === "array") {
+    const source = Array.isArray(value) ? value : [];
+    return source.slice(0, schema.maxItems || source.length).map((item) => conformToSchema(item, schema.items, field));
+  }
+  if (schema.type === "boolean") return value === true || value === "true";
+  if (schema.type === "number" || schema.type === "integer") {
+    const parsed = Number(value);
+    const finite = Number.isFinite(parsed) ? parsed : (schema.minimum || 0);
+    const bounded = Math.min(schema.maximum ?? finite, Math.max(schema.minimum ?? finite, finite));
+    return schema.type === "integer" ? Math.round(bounded) : bounded;
+  }
+  const text = String(value ?? "").trim();
+  if (schema.enum && !schema.enum.includes(text)) return defaultForField(field, schema);
+  return text;
+}
+
+function normalizeModelOutput(raw, schema, schemaName) {
+  const normalized = conformToSchema(raw, schema);
+  if (schemaName === "math_tutor_turn" && !normalized.reply) {
+    throw new HttpError(502, "模型没有返回可显示的教学内容，请重试");
+  }
+  if (schemaName === "math_tutor_summary" && !normalized.summary) {
+    throw new HttpError(502, "模型没有生成有效的结课报告，请重试");
+  }
+  if (schemaName === "math_photo_ocr" && !normalized.problem) {
+    normalized.success = false;
+    normalized.warnings = [...normalized.warnings, "未能从图片中可靠提取题目，请裁剪题目区域后重试"].slice(0, 6);
+  }
+  return normalized;
+}
+
+function providerError(provider, response, payload) {
+  const code = payload?.error?.code || payload?.code || "unknown";
+  console.error(`${provider.id} response error`, response.status, code);
+  if (response.status === 401) return new HttpError(400, `${provider.label} API Key 无效，请家长检查服务端密钥`);
+  if (response.status === 403) return new HttpError(400, `${provider.label} 当前密钥没有调用该模型的权限`);
+  if (response.status === 404) return new HttpError(400, `${provider.label} 模型名不存在或当前账户不可用`);
+  if (response.status === 429) return new HttpError(429, `${provider.label} 调用额度或频率已达上限，请稍后再试`);
+  if (response.status >= 500) return new HttpError(502, `${provider.label} 服务暂时异常，请稍后重试`);
+  return new HttpError(400, `${provider.label} 请求参数不兼容，请检查模型配置`);
+}
+
+function endpointFor(provider, env, path) {
+  const base = cleanBaseUrl(env[provider.definition.baseUrlEnv], provider.definition.defaultBaseUrl);
+  return `${base}/${path.replace(/^\/+/, "")}`;
+}
+
+async function callResponsesProvider(env, provider, request) {
+  const response = await fetch(endpointFor(provider, env, "responses"), {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${env.OPENAI_API_KEY}`,
+      Authorization: `Bearer ${env[provider.definition.apiKeyEnv]}`,
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      model: env.OPENAI_MODEL || DEFAULT_MODEL,
+      model: provider.model,
       store: false,
-      ...body
+      instructions: request.instructions,
+      input: request.input,
+      max_output_tokens: request.maxOutputTokens,
+      text: {
+        format: {
+          type: "json_schema",
+          name: request.schemaName,
+          strict: true,
+          schema: request.schema
+        }
+      }
     })
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const status = response.status === 429 ? 429 : response.status >= 500 ? 502 : 400;
-    const message = response.status === 429
-      ? "模型调用额度或频率已达上限，请稍后再试"
-      : response.status === 401
-        ? "服务端 API Key 无效，请家长重新配置"
-        : "模型暂时没有成功返回，请稍后重试";
-    console.error("OpenAI response error", response.status, payload?.error?.code || "unknown");
-    throw new HttpError(status, message);
-  }
+  if (!response.ok) throw providerError(provider, response, payload);
   const text = outputText(payload);
   if (!text) throw new HttpError(502, "模型返回为空，请重试");
-  try {
-    return JSON.parse(text);
-  } catch {
-    throw new HttpError(502, "模型返回格式异常，请重试");
-  }
+  return parseJsonOutput(text);
+}
+
+function toChatContent(content) {
+  if (!Array.isArray(content)) return content;
+  return content.map((item) => {
+    if (item?.type === "input_text") return { type: "text", text: limitText(item.text, 4_000) };
+    if (item?.type === "input_image") return { type: "image_url", image_url: { url: item.image_url } };
+    if (item?.type === "text" || item?.type === "image_url") return item;
+    return { type: "text", text: limitText(item?.text, 4_000) };
+  });
+}
+
+function toChatMessages(input) {
+  if (!Array.isArray(input)) return [{ role: "user", content: limitText(input, 4_000) }];
+  return input.map((message) => ({
+    role: message?.role === "assistant" ? "assistant" : "user",
+    content: toChatContent(message?.content)
+  })).filter((message) => Array.isArray(message.content) ? message.content.length : message.content);
+}
+
+async function callChatProvider(env, provider, request) {
+  const schemaPrompt = `${request.instructions}\n\n输出要求：只返回一个 JSON 对象，不要使用 Markdown 代码块或添加解释；必须包含 JSON Schema 中的全部字段。JSON Schema：${JSON.stringify(request.schema)}`;
+  const response = await fetch(endpointFor(provider, env, "chat/completions"), {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env[provider.definition.apiKeyEnv]}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model: provider.model,
+      messages: [{ role: "system", content: schemaPrompt }, ...toChatMessages(request.input)],
+      max_tokens: request.maxOutputTokens,
+      ...(provider.definition.jsonMode ? { response_format: { type: "json_object" } } : {}),
+      stream: false
+    })
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw providerError(provider, response, payload);
+  const text = chatOutputText(payload);
+  if (!text) throw new HttpError(502, `${provider.label} 返回为空，请重试`);
+  return parseJsonOutput(text);
+}
+
+async function callModel(env, provider, request) {
+  const raw = provider.definition.protocol === "responses"
+    ? await callResponsesProvider(env, provider, request)
+    : await callChatProvider(env, provider, request);
+  const result = normalizeModelOutput(raw, request.schema, request.schemaName);
+  return {
+    ...result,
+    meta: {
+      provider: provider.id,
+      providerLabel: provider.label,
+      model: provider.model
+    }
+  };
 }
 
 async function handleTutor(request, env) {
@@ -254,25 +560,24 @@ async function handleTutor(request, env) {
   const action = ["start", "message", "hint", "summary"].includes(body.action) ? body.action : "message";
   const context = sanitizeTutorContext(body.context);
   if (!context.topic) throw new HttpError(400, "缺少要学习的知识点");
+  const provider = resolveProvider(env, body.provider, "tutor");
 
   if (action === "summary") {
-    return callOpenAI(env, {
+    return callModel(env, provider, {
       instructions: summaryInstructions(context),
       input: summaryInput(body.messages),
-      max_output_tokens: 1_200,
-      text: {
-        format: { type: "json_schema", name: "math_tutor_summary", strict: true, schema: TUTOR_SUMMARY_SCHEMA }
-      }
+      maxOutputTokens: 1_200,
+      schemaName: "math_tutor_summary",
+      schema: TUTOR_SUMMARY_SCHEMA
     });
   }
 
-  return callOpenAI(env, {
+  return callModel(env, provider, {
     instructions: tutorInstructions(context, action),
     input: tutorInput(action, body.messages, body.input),
-    max_output_tokens: 900,
-    text: {
-      format: { type: "json_schema", name: "math_tutor_turn", strict: true, schema: TUTOR_RESPONSE_SCHEMA }
-    }
+    maxOutputTokens: 900,
+    schemaName: "math_tutor_turn",
+    schema: TUTOR_RESPONSE_SCHEMA
   });
 }
 
@@ -297,6 +602,7 @@ async function handleOcr(request, env) {
   }
   if (imageDataUrl.length > MAX_IMAGE_DATA_URL) throw new HttpError(413, "压缩后的图片仍然过大，请裁剪题目区域");
   const catalog = sanitizeCatalog(body.catalog);
+  const provider = resolveProvider(env, body.provider, "ocr");
   const instructions = `你是数学题目图片识别与整理助手。图片来自未成年学生的作业或试卷。
 严格要求：
 1. 忽略且绝不输出姓名、学校、班级、学号、考号、二维码等个人标识，只处理数学题和作答。
@@ -306,7 +612,7 @@ async function handleOcr(request, env) {
 5. 从给定目录中选择最匹配的 unitId 与 skillId；无法判断时返回空字符串，并在 unitHint/skillHint 写自然语言提示。
 6. errorType 必须从给定枚举中选最可能的一项；没有明显错误时选“检查不足”并在 warnings 说明。
 目录：${JSON.stringify(catalog)}`;
-  return callOpenAI(env, {
+  return callModel(env, provider, {
     instructions,
     input: [{
       role: "user",
@@ -315,10 +621,9 @@ async function handleOcr(request, env) {
         { type: "input_image", image_url: imageDataUrl, detail: "original" }
       ]
     }],
-    max_output_tokens: 1_800,
-    text: {
-      format: { type: "json_schema", name: "math_photo_ocr", strict: true, schema: OCR_RESPONSE_SCHEMA }
-    }
+    maxOutputTokens: 1_800,
+    schemaName: "math_photo_ocr",
+    schema: OCR_RESPONSE_SCHEMA
   });
 }
 
@@ -329,11 +634,24 @@ export default {
 
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") {
+      const providers = listProviderStates(env);
+      const configured = providers.some((provider) => provider.configured);
+      const defaultTutor = (() => {
+        try { return resolveProvider(env, "auto", "tutor"); } catch { return null; }
+      })();
+      const defaultOcr = (() => {
+        try { return resolveProvider(env, "auto", "ocr"); } catch { return null; }
+      })();
       return jsonResponse(request, env, {
         ok: true,
-        configured: Boolean(env.OPENAI_API_KEY),
+        configured,
         service: "math-ai-tutor-api",
-        model: env.OPENAI_MODEL || DEFAULT_MODEL
+        providers,
+        defaults: {
+          tutor: defaultTutor ? { provider: defaultTutor.id, label: defaultTutor.label, model: defaultTutor.model } : null,
+          ocr: defaultOcr ? { provider: defaultOcr.id, label: defaultOcr.label, model: defaultOcr.model } : null
+        },
+        model: defaultTutor?.model || ""
       });
     }
 

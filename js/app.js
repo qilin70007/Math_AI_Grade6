@@ -26,6 +26,7 @@ import {
   saveState
 } from "./storage.js";
 import {
+  AI_PROVIDER_OPTIONS,
   buildTutorContext,
   checkAiHealth,
   compactCurriculumCatalog,
@@ -33,6 +34,7 @@ import {
   imageFileToDataUrl,
   isAiConfigured,
   normalizeEndpoint,
+  providerLabel,
   recognizeMathImage,
   saveAiConfig,
   sendTutorMessage,
@@ -275,6 +277,7 @@ function renderClassroomLanding(lesson) {
     ? state.mistakes.find((item) => item.id === state.pendingLessonContext.mistakeId)
     : null;
   const connected = isAiConfigured(aiConfig);
+  const tutorProviderName = providerLabel(aiConfig.tutorProvider);
   return `
     ${pageHead("AI CLASSROOM", "开放式 AI 数学课堂", "可以追问、讲思路、要求换一种讲法；AI 会根据真实对话继续教学。")}
     <section class="hero" style="min-height:330px">
@@ -295,7 +298,7 @@ function renderClassroomLanding(lesson) {
     </section>
     <section class="section-block grid two">
       <article class="card pad">
-        <div class="section-head"><h2>开放式教学</h2><span class="tag ${connected ? "" : "warm"}">${connected ? "服务已填写" : "待连接"}</span></div>
+        <div class="section-head"><h2>开放式教学</h2><span class="tag ${connected ? "" : "warm"}">${connected ? escapeHtml(tutorProviderName) : "待连接"}</span></div>
         <div class="goal-list">
           <div class="goal-row"><span>问</span><div>接受完整句子、算式、自己的疑问，不要求命中预设答案。</div></div>
           <div class="goal-row"><span>引</span><div>先诊断再分层提示，不急着公布答案；听不懂可以要求换个例子。</div></div>
@@ -307,7 +310,7 @@ function renderClassroomLanding(lesson) {
         <div class="goal-list">
           <div class="goal-row"><span>隐</span><div>只发送年级、知识点与本节对话；称呼、学校和家长 PIN 不发送。</div></div>
           <div class="goal-row"><span>稳</span><div>模型不可用时，仍可进入无需联网的“最大公因数”示范课。</div></div>
-          <div class="goal-row"><span>设</span><div>大模型服务地址由家长配置，API Key 只保存在服务端。</div></div>
+          <div class="goal-row"><span>设</span><div>教学和拍照识题可以分别选择 OpenAI、DeepSeek、Kimi、GLM 或腾讯混元，API Key 只保存在服务端。</div></div>
         </div>
       </article>
     </section>`;
@@ -340,9 +343,12 @@ function renderAiLesson(runtime) {
   const suggestions = runtime.suggestedActions?.length
     ? runtime.suggestedActions
     : ["给我一点提示", "换一个更简单的例子", "让我自己试一道"];
+  const providerText = runtime.provider
+    ? `${runtime.provider.label}${runtime.provider.model ? ` · ${runtime.provider.model}` : ""}`
+    : providerLabel(aiConfig.tutorProvider);
   return `
     <header class="page-head">
-      <div><p class="eyebrow">OPEN AI CLASSROOM</p><h1>${escapeHtml(runtime.context.topic)}</h1><p>${escapeHtml(runtime.context.unit)} · 已对话 ${runtime.turns || 0} 轮</p></div>
+      <div><p class="eyebrow">OPEN AI CLASSROOM</p><h1>${escapeHtml(runtime.context.topic)}</h1><p>${escapeHtml(runtime.context.unit)} · ${escapeHtml(providerText)} · 已对话 ${runtime.turns || 0} 轮</p></div>
       <div class="button-row"><button class="button secondary small" type="button" data-action="finish-ai-lesson" ${runtime.loading ? "disabled" : ""}>结束并生成报告</button><button class="button ghost small" type="button" data-action="pause-lesson">暂时离开</button></div>
     </header>
     <div class="lesson-layout">
@@ -372,6 +378,7 @@ function renderAiLesson(runtime) {
             <div class="goal-row"><span>章</span><div>${escapeHtml(runtime.context.unit)}</div></div>
             <div class="goal-row"><span>点</span><div>${escapeHtml(runtime.context.topic)}</div></div>
             <div class="goal-row"><span>度</span><div>课前掌握度 ${runtime.context.mastery}%</div></div>
+            <div class="goal-row"><span>模</span><div>${escapeHtml(providerText)}</div></div>
           </div>
         </article>
         <article class="card tip-card"><strong>怎么聊最有效</strong><p>可以写“我是这样想的……”“这一步为什么？”或“不要给答案，只提示第一步”。</p></article>
@@ -665,6 +672,13 @@ function appendAiResponse(runtime, result) {
     masterySignal: result.masterySignal || "none",
     shouldRecordEvidence: Boolean(result.shouldRecordEvidence)
   });
+  if (result.meta?.provider) {
+    runtime.provider = {
+      id: String(result.meta.provider),
+      label: String(result.meta.providerLabel || result.meta.provider),
+      model: String(result.meta.model || "")
+    };
+  }
 }
 
 async function performAiStart(runtimeId) {
@@ -770,6 +784,13 @@ function submitAiMessage(answer, action = "message") {
 }
 
 function saveAiLessonSummary(runtime, summary) {
+  if (summary.meta?.provider) {
+    runtime.provider = {
+      id: String(summary.meta.provider),
+      label: String(summary.meta.providerLabel || summary.meta.provider),
+      model: String(summary.meta.model || "")
+    };
+  }
   const signal = summary.masterySignal || "none";
   if (signal !== "none" && state.skills[runtime.skillId]) {
     state.skills[runtime.skillId] = applyEvidence(state.skills[runtime.skillId], {
@@ -792,7 +813,8 @@ function saveAiLessonSummary(runtime, summary) {
     needsWork: Array.isArray(summary.needsWork) ? summary.needsWork : [],
     nextPlan: String(summary.nextPlan || "根据掌握证据安排下一次复习"),
     records: runtime.records,
-    aiGenerated: true
+    aiGenerated: true,
+    aiProvider: runtime.provider || null
   };
   state.sessions.push(session);
   runtime.completed = true;
@@ -938,7 +960,14 @@ function openProfileModal() {
         <div class="field full"><label for="profile-textbook">教材版本</label><input id="profile-textbook" name="textbook" value="${escapeHtml(state.profile.textbook)}" /><small>正式使用前建议按学校实际教材封面和目录校准。</small></div>
       </div>
       <div class="modal-actions"><button class="button secondary" type="button" data-action="close-modal">取消</button><button class="button primary" type="submit">保存档案</button></div>
-    </form>`));
+  </form>`));
+}
+
+function providerOptionsHtml(selected, capability) {
+  return AI_PROVIDER_OPTIONS.map((provider) => {
+    const note = capability === "ocr" && provider.id === "deepseek" ? "（需另配视觉模型）" : "";
+    return `<option value="${provider.id}" ${selected === provider.id ? "selected" : ""}>${escapeHtml(provider.label + note)}</option>`;
+  }).join("");
 }
 
 function openSettingsModal() {
@@ -954,7 +983,11 @@ function openSettingsModal() {
         <div class="field full ai-config-field">
           <label for="ai-endpoint">大模型服务地址</label>
           <div class="inline-field"><input id="ai-endpoint" name="aiEndpoint" type="text" inputmode="url" placeholder="https://math-ai-tutor-api.你的子域.workers.dev" value="${escapeHtml(aiConfig.endpoint)}" /><button class="button secondary" type="button" data-action="test-ai-connection">测试连接</button></div>
-          <small id="ai-connection-status">这里只保存服务地址；OpenAI API Key 必须放在服务端，绝不能填进网页。<a class="text-link" href="https://github.com/qilin70007/Math_AI_Grade6/blob/main/AI_SETUP.md" target="_blank" rel="noreferrer">查看一次性配置教程</a></small>
+        </div>
+        <div class="field"><label for="ai-tutor-provider">AI教学模型</label><select id="ai-tutor-provider" name="tutorProvider">${providerOptionsHtml(aiConfig.tutorProvider, "tutor")}</select><small>用于对话、提示与课堂报告。</small></div>
+        <div class="field"><label for="ai-ocr-provider">拍照识题模型</label><select id="ai-ocr-provider" name="ocrProvider">${providerOptionsHtml(aiConfig.ocrProvider, "ocr")}</select><small>可与教学模型不同。</small></div>
+        <div class="field full ai-config-field">
+          <small id="ai-connection-status">网页只保存服务地址和模型选择；各厂商 API Key 必须放在服务端。<a class="text-link" href="https://github.com/qilin70007/Math_AI_Grade6/blob/main/AI_SETUP.md" target="_blank" rel="noreferrer">查看多模型配置教程</a></small>
         </div>
       </div>
       <div class="modal-actions"><button class="button secondary" type="button" data-action="close-modal">取消</button><button class="button primary" type="submit">保存设置</button></div>
@@ -963,6 +996,8 @@ function openSettingsModal() {
 
 async function testAiConnection() {
   const field = document.querySelector("#ai-endpoint");
+  const tutorField = document.querySelector("#ai-tutor-provider");
+  const ocrField = document.querySelector("#ai-ocr-provider");
   const status = document.querySelector("#ai-connection-status");
   const button = document.querySelector('[data-action="test-ai-connection"]');
   try {
@@ -972,10 +1007,40 @@ async function testAiConnection() {
     if (button) button.disabled = true;
     if (status) status.textContent = "正在连接服务端……";
     const result = await checkAiHealth({ endpoint });
-    if (!result.configured) throw new Error("服务可以访问，但还没有在服务端设置 OPENAI_API_KEY");
+    if (!result.configured) throw new Error("服务可以访问，但还没有配置任何大模型 API Key");
+    const selections = {
+      tutor: String(tutorField?.value || "auto"),
+      ocr: String(ocrField?.value || "auto")
+    };
+    const resolved = {};
+    for (const capability of ["tutor", "ocr"]) {
+      const selection = selections[capability];
+      if (!Array.isArray(result.providers)) {
+        if (selection !== "auto" && selection !== "openai") {
+          throw new Error("当前服务端还是旧版，只支持 OpenAI；请先重新部署新版 Worker");
+        }
+        resolved[capability] = { label: "OpenAI", model: result.model || "已就绪" };
+        continue;
+      }
+      if (selection === "auto") {
+        resolved[capability] = result.defaults?.[capability];
+        if (!resolved[capability]) {
+          throw new Error(capability === "ocr" ? "没有已配置且支持图片的模型" : "没有已配置的教学模型");
+        }
+        continue;
+      }
+      const provider = result.providers.find((item) => item.id === selection);
+      if (!provider?.configured) throw new Error(`${provider?.label || providerLabel(selection)} 尚未在服务端配置 API Key`);
+      if (!provider.capabilities?.[capability]) {
+        throw new Error(capability === "ocr"
+          ? `${provider.label} 尚未配置支持图片的视觉模型`
+          : `${provider.label} 尚未配置教学模型`);
+      }
+      resolved[capability] = { label: provider.label, model: provider.models?.[capability] || "已就绪" };
+    }
     if (status) {
       status.className = "connection-success";
-      status.textContent = `连接成功 · ${result.model || "模型已就绪"}。请再点击“保存设置”。`;
+      status.textContent = `连接成功 · 教学：${resolved.tutor.label} / 拍照：${resolved.ocr.label}。请再点击“保存设置”。`;
     }
   } catch (error) {
     if (status) {
@@ -1013,7 +1078,7 @@ function openMistakeForm() {
         <div class="field full ocr-panel">
           <div><strong>AI 拍照识题</strong><small>识别时，压缩后的照片会发送到已配置的模型服务。请先裁掉姓名、学校、班级和考号。</small></div>
           <button class="button warm" id="mistake-ocr-button" type="button" data-action="run-mistake-ocr">识别题目并填写</button>
-          <p id="ocr-status" class="ocr-status">${isAiConfigured(aiConfig) ? "选择照片后开始识别；结果必须人工核对。" : "尚未连接模型服务，仍可手动录入并保存照片。"}</p>
+          <p id="ocr-status" class="ocr-status">${isAiConfigured(aiConfig) ? `当前：${escapeHtml(providerLabel(aiConfig.ocrProvider))}。选择照片后开始识别；结果必须人工核对。` : "尚未连接模型服务，仍可手动录入并保存照片。"}</p>
         </div>
         <input type="hidden" id="ocr-skill-id" name="ocrSkillId" />
         <input type="hidden" id="ocr-confidence" name="ocrConfidence" />
@@ -1084,9 +1149,10 @@ async function runMistakeOcr() {
     setFormValue("#ocr-warnings", JSON.stringify(result.warnings || []));
     const confidence = Math.round((Number(result.confidence) || 0) * 100);
     const warningText = result.warnings?.length ? ` 提醒：${result.warnings.join("；")}` : "";
+    const modelText = result.meta?.providerLabel ? ` · ${result.meta.providerLabel}` : "";
     if (status) {
       status.className = `ocr-status ${confidence < 75 ? "needs-review" : "success"}`;
-      status.textContent = `识别完成，置信度 ${confidence}%。请逐项核对后再保存。${warningText}`;
+      status.textContent = `识别完成${modelText}，置信度 ${confidence}%。请逐项核对后再保存。${warningText}`;
     }
     toast("题目已识别，请核对所有字段");
   } catch (error) {
@@ -1105,7 +1171,7 @@ async function openMistakeDetail(id) {
   if (!mistake) return;
   const unit = CURRICULUM.find((item) => item.id === mistake.unitId);
   openModal(modalFrame("错题复习", `
-    <span class="tag ${mistake.status === "review" ? "purple" : "warm"}">${mistake.status === "mastered" ? "已掌握" : mistake.status === "review" ? "待复习" : "练习中"}</span>${mistake.ocr?.confidence != null ? ` <span class="tag">OCR ${Math.round(mistake.ocr.confidence * 100)}%</span>` : ""}
+    <span class="tag ${mistake.status === "review" ? "purple" : "warm"}">${mistake.status === "mastered" ? "已掌握" : mistake.status === "review" ? "待复习" : "练习中"}</span>${mistake.ocr?.confidence != null ? ` <span class="tag">OCR ${Math.round(mistake.ocr.confidence * 100)}%${mistake.ocr.provider?.providerLabel ? ` · ${escapeHtml(mistake.ocr.provider.providerLabel)}` : ""}</span>` : ""}
     <h2 style="margin:12px 0 5px;font-size:22px">${escapeHtml(mistake.title)}</h2>
     <p style="margin:0;color:var(--muted);font-size:12px">${escapeHtml(unit?.title || "未分类")} · ${escapeHtml(mistake.source)} · 已复习${mistake.reviewCount || 0}次</p>
     ${mistake.photoId ? `<div id="mistake-photo-slot" class="detail-block" style="text-align:center">正在读取原题图片……</div>` : ""}
@@ -1160,6 +1226,7 @@ function openReport(id) {
       <div class="setting-tile"><span>本节表现</span><strong>${report.score}分</strong></div>
       <div class="setting-tile"><span>独立完成率</span><strong>${report.independentRate}%</strong></div>
     </div>
+    ${report.aiProvider ? `<div class="detail-block"><h3>本节模型</h3><p>${escapeHtml(report.aiProvider.label || report.aiProvider.id || "AI")} ${report.aiProvider.model ? `· ${escapeHtml(report.aiProvider.model)}` : ""}</p></div>` : ""}
     <div class="detail-block"><h3>本节结论</h3><p>${escapeHtml(report.summary)}</p></div>
     <div class="detail-block"><h3>做得好的</h3><p>${(report.strengths || []).map((item) => `✓ ${escapeHtml(item)}`).join("\n") || "暂无记录"}</p></div>
     <div class="detail-block"><h3>还要继续</h3><p>${(report.needsWork || []).map((item) => `• ${escapeHtml(item)}`).join("\n") || "暂无"}</p></div>
@@ -1334,7 +1401,11 @@ document.addEventListener("submit", async (event) => {
 
   if (form.id === "settings-form") {
     try {
-      aiConfig = saveAiConfig({ endpoint: data.get("aiEndpoint") });
+      aiConfig = saveAiConfig({
+        endpoint: data.get("aiEndpoint"),
+        tutorProvider: data.get("tutorProvider"),
+        ocrProvider: data.get("ocrProvider")
+      });
     } catch (error) {
       toast(error.message || "大模型服务地址格式不正确");
       return;
@@ -1394,7 +1465,8 @@ document.addEventListener("submit", async (event) => {
         confidence: Math.max(0, Math.min(1, ocrConfidence)),
         warnings: Array.isArray(ocrWarnings) ? ocrWarnings : [],
         recognizedAt: new Date().toISOString(),
-        modelSuggestedSkillId: pendingOcrResult?.skillId || ""
+        modelSuggestedSkillId: pendingOcrResult?.skillId || "",
+        provider: pendingOcrResult?.meta || null
       } : null
     });
     persist();
