@@ -1,4 +1,4 @@
-const CACHE_NAME = "math-ai-grade6-v5";
+const CACHE_NAME = "math-ai-grade6-v6";
 const APP_SHELL = [
   "./",
   "./index.html",

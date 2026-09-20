@@ -60,14 +60,14 @@ export function providerLabel(value) {
 }
 
 export function getAiConfig(storage = safeStorage()) {
-  const fallback = { endpoint: defaultAiEndpoint(), tutorProvider: "auto", ocrProvider: "auto" };
+  const fallback = { endpoint: defaultAiEndpoint(), tutorProvider: "deepseek", ocrProvider: "deepseek" };
   if (!storage) return fallback;
   try {
     const saved = JSON.parse(storage.getItem(AI_CONFIG_KEY) || storage.getItem(LEGACY_AI_CONFIG_KEY) || "null");
     return {
       endpoint: normalizeEndpoint(saved?.endpoint || fallback.endpoint),
-      tutorProvider: normalizeProvider(saved?.tutorProvider),
-      ocrProvider: normalizeProvider(saved?.ocrProvider)
+      tutorProvider: normalizeProvider(saved?.tutorProvider || fallback.tutorProvider),
+      ocrProvider: normalizeProvider(saved?.ocrProvider || fallback.ocrProvider)
     };
   } catch {
     return fallback;

@@ -27,9 +27,9 @@ export const PROVIDER_DEFINITIONS = Object.freeze({
     baseUrlEnv: "DEEPSEEK_BASE_URL",
     defaultBaseUrl: "https://api.deepseek.com/v1",
     tutorModelEnv: "DEEPSEEK_MODEL",
-    defaultTutorModel: "deepseek-chat",
+    defaultTutorModel: "deepseek-flash",
     visionModelEnv: "DEEPSEEK_VISION_MODEL",
-    defaultVisionModel: ""
+    defaultVisionModel: "deepseek-flash"
   }),
   kimi: Object.freeze({
     id: "kimi",

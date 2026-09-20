@@ -58,6 +58,15 @@ test("前端提供五家模型入口且未知选择回退自动", () => {
   assert.equal(providerLabel("hunyuan"), "腾讯混元");
 });
 
+test("新设备默认选择 DeepSeek 教学和拍照识题", () => {
+  const storage = { getItem: () => null };
+  assert.deepEqual(getAiConfig(storage), {
+    endpoint: "",
+    tutorProvider: "deepseek",
+    ocrProvider: "deepseek"
+  });
+});
+
 test("教学上下文主动排除学生称呼、学校和家长 PIN", () => {
   const state = {
     profile: {
@@ -128,12 +137,13 @@ test("服务端区分教学与视觉能力并支持自动路由", () => {
   const deepseek = states.find((item) => item.id === "deepseek");
   const glm = states.find((item) => item.id === "glm");
   assert.equal(deepseek.capabilities.tutor, true);
-  assert.equal(deepseek.capabilities.ocr, false);
+  assert.equal(deepseek.capabilities.ocr, true);
+  assert.equal(deepseek.models.ocr, "deepseek-flash");
   assert.equal(glm.capabilities.tutor, true);
   assert.equal(glm.capabilities.ocr, true);
   assert.equal(resolveProvider(env, "auto", "tutor").id, "deepseek");
   assert.equal(resolveProvider(env, "auto", "ocr").id, "glm");
-  assert.throws(() => resolveProvider(env, "deepseek", "ocr"), /视觉模型/);
+  assert.equal(resolveProvider(env, "deepseek", "ocr").model, "deepseek-flash");
 });
 
 test("Worker 调用模型时关闭存储并再次移除身份字段", async () => {
@@ -278,6 +288,54 @@ test("Kimi OCR 会把图片转换为兼容的 image_url 内容块", async () => 
   }
 });
 
+test("DeepSeek 拍照识题使用 deepseek-flash 和同一个 API Key", async () => {
+  const originalFetch = globalThis.fetch;
+  let modelUrl;
+  let modelRequest;
+  let authorization;
+  globalThis.fetch = async (url, options) => {
+    modelUrl = String(url);
+    modelRequest = JSON.parse(options.body);
+    authorization = options.headers.Authorization;
+    return new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({
+        success: true,
+        confidence: 0.91,
+        title: "分数加法",
+        problem: "1/2+1/3=?",
+        studentAnswer: "2/5",
+        errorType: "计算错误"
+      }) } }]
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+  try {
+    const response = await worker.fetch(new Request("https://worker.example/api/ocr", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: "https://qilin70007.github.io" },
+      body: JSON.stringify({
+        provider: "deepseek",
+        imageDataUrl: "data:image/png;base64,iVBORw0KGgo=",
+        catalog: []
+      })
+    }), {
+      DEEPSEEK_API_KEY: "deepseek-key",
+      DEFAULT_OCR_PROVIDER: "deepseek",
+      ALLOWED_ORIGINS: "https://qilin70007.github.io"
+    });
+    const result = await response.json();
+    const imageBlock = modelRequest.messages.at(-1).content.find((item) => item.type === "image_url");
+    assert.equal(response.status, 200);
+    assert.equal(modelUrl, "https://api.deepseek.com/v1/chat/completions");
+    assert.equal(authorization, "Bearer deepseek-key");
+    assert.equal(modelRequest.model, "deepseek-flash");
+    assert.equal(imageBlock.image_url.url, "data:image/png;base64,iVBORw0KGgo=");
+    assert.equal(result.meta.provider, "deepseek");
+    assert.equal(result.meta.model, "deepseek-flash");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("健康检查只公开配置状态、能力和模型，不公开密钥", async () => {
   const response = await worker.fetch(new Request("https://worker.example/health", {
     headers: { Origin: "https://qilin70007.github.io" }
@@ -292,7 +350,7 @@ test("健康检查只公开配置状态、能力和模型，不公开密钥", as
   assert.equal(response.status, 200);
   assert.equal(result.defaults.tutor.provider, "deepseek");
   assert.equal(result.defaults.ocr.provider, "kimi");
-  assert.equal(result.providers.find((item) => item.id === "deepseek").capabilities.ocr, false);
+  assert.equal(result.providers.find((item) => item.id === "deepseek").capabilities.ocr, true);
   assert.equal(JSON.stringify(result).includes("never-return-this-key"), false);
   assert.equal(JSON.stringify(result).includes("also-secret"), false);
 });

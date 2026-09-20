@@ -963,10 +963,9 @@ function openProfileModal() {
   </form>`));
 }
 
-function providerOptionsHtml(selected, capability) {
+function providerOptionsHtml(selected) {
   return AI_PROVIDER_OPTIONS.map((provider) => {
-    const note = capability === "ocr" && provider.id === "deepseek" ? "（需另配视觉模型）" : "";
-    return `<option value="${provider.id}" ${selected === provider.id ? "selected" : ""}>${escapeHtml(provider.label + note)}</option>`;
+    return `<option value="${provider.id}" ${selected === provider.id ? "selected" : ""}>${escapeHtml(provider.label)}</option>`;
   }).join("");
 }
 
@@ -984,8 +983,8 @@ function openSettingsModal() {
           <label for="ai-endpoint">大模型服务地址</label>
           <div class="inline-field"><input id="ai-endpoint" name="aiEndpoint" type="text" inputmode="url" placeholder="https://math-ai-tutor-api.你的子域.workers.dev" value="${escapeHtml(aiConfig.endpoint)}" /><button class="button secondary" type="button" data-action="test-ai-connection">测试连接</button></div>
         </div>
-        <div class="field"><label for="ai-tutor-provider">AI教学模型</label><select id="ai-tutor-provider" name="tutorProvider">${providerOptionsHtml(aiConfig.tutorProvider, "tutor")}</select><small>用于对话、提示与课堂报告。</small></div>
-        <div class="field"><label for="ai-ocr-provider">拍照识题模型</label><select id="ai-ocr-provider" name="ocrProvider">${providerOptionsHtml(aiConfig.ocrProvider, "ocr")}</select><small>可与教学模型不同。</small></div>
+        <div class="field"><label for="ai-tutor-provider">AI教学模型</label><select id="ai-tutor-provider" name="tutorProvider">${providerOptionsHtml(aiConfig.tutorProvider)}</select><small>用于对话、提示与课堂报告。</small></div>
+        <div class="field"><label for="ai-ocr-provider">拍照识题模型</label><select id="ai-ocr-provider" name="ocrProvider">${providerOptionsHtml(aiConfig.ocrProvider)}</select><small>DeepSeek 可使用 deepseek-flash 识图，也可选择其他视觉模型。</small></div>
         <div class="field full ai-config-field">
           <small id="ai-connection-status">网页只保存服务地址和模型选择；各厂商 API Key 必须放在服务端。<a class="text-link" href="https://github.com/qilin70007/Math_AI_Grade6/blob/main/AI_SETUP.md" target="_blank" rel="noreferrer">查看多模型配置教程</a></small>
         </div>
@@ -1040,7 +1039,7 @@ async function testAiConnection() {
     }
     if (status) {
       status.className = "connection-success";
-      status.textContent = `连接成功 · 教学：${resolved.tutor.label} / 拍照：${resolved.ocr.label}。请再点击“保存设置”。`;
+      status.textContent = `服务已连接、密钥已配置 · 教学：${resolved.tutor.label} / 拍照：${resolved.ocr.label}。密钥是否有效需在实际课堂或拍照识题时验证；请再点击“保存设置”。`;
     }
   } catch (error) {
     if (status) {

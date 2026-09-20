@@ -18,7 +18,7 @@
 - 联网时优先获取最新版；部署更新后自动刷新，离线时使用本机缓存
 - 手机、平板和桌面响应式布局
 
-大模型功能采用“GitHub Pages 前端 + Cloudflare Worker 服务端”结构，浏览器只保存服务地址和模型选择，API Key 仅放在 Worker Secret 中。各厂商返回会统一转换并校验为数芽需要的结构；OpenAI 请求设置 `store: false`。前端不会发送孩子称呼、学校或家长 PIN。第一次使用请按 [AI_SETUP.md](./AI_SETUP.md) 完成服务端配置。
+大模型功能采用“GitHub Pages 前端 + Cloudflare Worker 服务端”结构。默认使用 DeepSeek 的 `deepseek-flash` 同时完成文字教学和拍照识题，只需一个 DeepSeek API Key。浏览器只保存服务地址和模型选择，API Key 仅放在 Worker Secret 中。各厂商返回会统一转换并校验为数芽需要的结构；OpenAI 请求设置 `store: false`。前端不会发送孩子称呼、学校或家长 PIN。第一次使用请按 [AI_SETUP.md](./AI_SETUP.md) 完成服务端配置。
 
 ## 本地运行
 
@@ -37,7 +37,7 @@ npm run check
 
 ## 开启 AI 功能
 
-完整步骤见 [多模型 AI 课堂与拍照识题配置](./AI_SETUP.md)。部署 Worker、配置至少一个厂商密钥后，在“家长 → 学习设置”中填写服务地址，分别选择教学与 OCR 模型并测试连接。
+完整步骤见 [多模型 AI 课堂与拍照识题配置](./AI_SETUP.md)。部署 Worker、添加 `DEEPSEEK_API_KEY` 后，在“家长 → 学习设置”中填写服务地址并测试连接；教学与 OCR 默认均选择 DeepSeek。
 
 服务端提供：
 

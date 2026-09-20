@@ -1,6 +1,6 @@
 # 至少取消一行注释并填入真实密钥；不要把 .dev.vars 提交到 GitHub。
-OPENAI_API_KEY=sk-your-openai-key
-# DEEPSEEK_API_KEY=sk-your-deepseek-key
+DEEPSEEK_API_KEY=sk-your-deepseek-key
+# OPENAI_API_KEY=sk-your-openai-key
 # KIMI_API_KEY=sk-your-kimi-key
 # GLM_API_KEY=your-glm-key
 # HUNYUAN_API_KEY=your-hunyuan-key
