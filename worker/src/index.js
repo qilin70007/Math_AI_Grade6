@@ -1,4 +1,8 @@
+import { ModelOutputError, parseModelJson } from "./model-output.js";
+
 const DEFAULT_MODEL = "gpt-5.6-terra";
+export const SERVICE_VERSION = "2026-09-21.1";
+const PROVIDER_TIMEOUT_MS = 30_000;
 const MAX_REQUEST_BYTES = 8_000_000;
 const MAX_IMAGE_DATA_URL = 6_500_000;
 const RATE_WINDOW_MS = 60_000;
@@ -172,9 +176,10 @@ function jsonResponse(request, env, data, status = 200) {
 }
 
 class HttpError extends Error {
-  constructor(status, message) {
+  constructor(status, message, code = "REQUEST_FAILED") {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -340,6 +345,7 @@ function tutorInstructions(context, action) {
 5. 学生是未成年人：不要索要姓名、学校、班级、联系方式或其他个人信息，不讨论与数学学习无关的敏感话题。
 6. 尊重学生节奏，不羞辱、不夸大掌握程度。一次答对不等于稳定掌握。
 7. reply 控制在约180字内；math 只放必要的算式、公式或空字符串；suggestedActions 是学生可直接点击的短句。
+8. 文字中的公式用 $...$ 包围，独立公式用 $$...$$；JSON 字符串中的 LaTeX 反斜杠必须正确转义。
 本轮动作：${action}。
 学习上下文（不含身份信息）：${JSON.stringify(context)}`;
 }
@@ -365,12 +371,9 @@ function summaryInput(messages) {
 
 function outputText(response) {
   if (typeof response?.output_text === "string") return response.output_text;
-  for (const item of response?.output || []) {
-    for (const content of item?.content || []) {
-      if (content?.type === "output_text" && typeof content.text === "string") return content.text;
-    }
-  }
-  return "";
+  return (response?.output || []).flatMap((item) => item?.content || [])
+    .filter((content) => content?.type === "output_text" && typeof content.text === "string")
+    .map((content) => content.text).join("");
 }
 
 function chatOutputText(response) {
@@ -380,28 +383,6 @@ function chatOutputText(response) {
     return content.map((item) => typeof item === "string" ? item : item?.text || "").join("");
   }
   return "";
-}
-
-function parseJsonOutput(text) {
-  const clean = String(text || "")
-    .trim()
-    .replace(/^```(?:json)?\s*/i, "")
-    .replace(/\s*```$/, "")
-    .trim();
-  try {
-    return JSON.parse(clean);
-  } catch {
-    const start = clean.indexOf("{");
-    const end = clean.lastIndexOf("}");
-    if (start >= 0 && end > start) {
-      try {
-        return JSON.parse(clean.slice(start, end + 1));
-      } catch {
-        // Fall through to the user-facing format error below.
-      }
-    }
-  }
-  throw new HttpError(502, "模型返回格式异常，请重试");
 }
 
 function defaultForField(field, schema) {
@@ -440,11 +421,14 @@ function conformToSchema(value, schema, field = "") {
 
 function normalizeModelOutput(raw, schema, schemaName) {
   const normalized = conformToSchema(raw, schema);
-  if (schemaName === "math_tutor_turn" && !normalized.reply) {
-    throw new HttpError(502, "模型没有返回可显示的教学内容，请重试");
+  if (schemaName === "math_tutor_turn" && (typeof raw.reply !== "string" || !normalized.reply)) {
+    throw new ModelOutputError();
   }
-  if (schemaName === "math_tutor_summary" && !normalized.summary) {
-    throw new HttpError(502, "模型没有生成有效的结课报告，请重试");
+  if (schemaName === "math_tutor_summary" && (typeof raw.summary !== "string" || !normalized.summary)) {
+    throw new ModelOutputError();
+  }
+  if (schemaName === "math_photo_ocr" && typeof raw.problem !== "string" && typeof raw.success !== "boolean") {
+    throw new ModelOutputError();
   }
   if (schemaName === "math_photo_ocr" && !normalized.problem) {
     normalized.success = false;
@@ -457,6 +441,7 @@ function providerError(provider, response, payload) {
   const code = payload?.error?.code || payload?.code || "unknown";
   console.error(`${provider.id} response error`, response.status, code);
   if (response.status === 401) return new HttpError(400, `${provider.label} API Key 无效，请家长检查服务端密钥`);
+  if (response.status === 402) return new HttpError(400, `${provider.label} API 余额不足，请家长检查账户余额`);
   if (response.status === 403) return new HttpError(400, `${provider.label} 当前密钥没有调用该模型的权限`);
   if (response.status === 404) return new HttpError(400, `${provider.label} 模型名不存在或当前账户不可用`);
   if (response.status === 429) return new HttpError(429, `${provider.label} 调用额度或频率已达上限，请稍后再试`);
@@ -469,14 +454,37 @@ function endpointFor(provider, env, path) {
   return `${base}/${path.replace(/^\/+/, "")}`;
 }
 
+async function fetchProvider(env, provider, path, body) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PROVIDER_TIMEOUT_MS);
+  try {
+    const response = await fetch(endpointFor(provider, env, path), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env[provider.definition.apiKeyEnv]}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal
+    });
+    const payload = await response.json().catch((error) => {
+      if (controller.signal.aborted) throw error;
+      return null;
+    });
+    if (!response.ok) throw providerError(provider, response, payload);
+    if (!payload) throw new ModelOutputError();
+    return payload;
+  } catch (error) {
+    if (controller.signal.aborted) throw new HttpError(504, `${provider.label} 回复超时，你的作答已保留，请稍后重试`, "UPSTREAM_TIMEOUT");
+    if (error instanceof TypeError) throw new HttpError(502, `暂时无法连接 ${provider.label}，你的作答已保留，请稍后重试`, "UPSTREAM_NETWORK");
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function callResponsesProvider(env, provider, request) {
-  const response = await fetch(endpointFor(provider, env, "responses"), {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${env[provider.definition.apiKeyEnv]}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
+  const payload = await fetchProvider(env, provider, "responses", {
       model: provider.model,
       store: false,
       instructions: request.instructions,
@@ -490,13 +498,13 @@ async function callResponsesProvider(env, provider, request) {
           schema: request.schema
         }
       }
-    })
   });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw providerError(provider, response, payload);
+  if (payload.status === "incomplete") throw new ModelOutputError("MODEL_TRUNCATED");
+  if ((payload.output || []).some((item) => item?.content?.some((part) => part.type === "refusal"))) {
+    throw new HttpError(422, "模型未能回答这次请求，请换一种数学问题表述", "MODEL_REFUSED");
+  }
   const text = outputText(payload);
-  if (!text) throw new HttpError(502, "模型返回为空，请重试");
-  return parseJsonOutput(text);
+  return parseModelJson(text);
 }
 
 function toChatContent(content) {
@@ -518,41 +526,52 @@ function toChatMessages(input) {
 }
 
 async function callChatProvider(env, provider, request) {
-  const schemaPrompt = `${request.instructions}\n\n输出要求：只返回一个 JSON 对象，不要使用 Markdown 代码块或添加解释；必须包含 JSON Schema 中的全部字段。JSON Schema：${JSON.stringify(request.schema)}`;
-  const response = await fetch(endpointFor(provider, env, "chat/completions"), {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${env[provider.definition.apiKeyEnv]}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
+  const example = conformToSchema({}, request.schema);
+  const schemaPrompt = `${request.instructions}\n\n输出要求：只返回一个完整 JSON 对象，不要使用 Markdown 代码块或添加解释；必须包含 JSON Schema 中的全部字段。不要输出思考过程。JSON Schema：${JSON.stringify(request.schema)}\n结构示例（请按实际内容填写）：${JSON.stringify(example)}\n公式转义示例：${JSON.stringify({ math: "$\\frac{3}{5}$ 与 $\\frac{2}{3}$" })}`;
+  const payload = await fetchProvider(env, provider, "chat/completions", {
       model: provider.model,
       messages: [{ role: "system", content: schemaPrompt }, ...toChatMessages(request.input)],
       max_tokens: request.maxOutputTokens,
+      ...(provider.id === "deepseek" ? { thinking: { type: "disabled" } } : {}),
       ...(provider.definition.jsonMode ? { response_format: { type: "json_object" } } : {}),
       stream: false
-    })
   });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw providerError(provider, response, payload);
+  const choice = payload?.choices?.[0];
+  if (choice?.finish_reason === "length") throw new ModelOutputError("MODEL_TRUNCATED");
+  if (choice?.finish_reason === "content_filter" || choice?.message?.refusal) {
+    throw new HttpError(422, "模型未能回答这次请求，请换一种数学问题表述", "MODEL_REFUSED");
+  }
   const text = chatOutputText(payload);
-  if (!text) throw new HttpError(502, `${provider.label} 返回为空，请重试`);
-  return parseJsonOutput(text);
+  return parseModelJson(text);
 }
 
 async function callModel(env, provider, request) {
-  const raw = provider.definition.protocol === "responses"
-    ? await callResponsesProvider(env, provider, request)
-    : await callChatProvider(env, provider, request);
-  const result = normalizeModelOutput(raw, request.schema, request.schemaName);
-  return {
-    ...result,
-    meta: {
-      provider: provider.id,
-      providerLabel: provider.label,
-      model: provider.model
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const current = attempt === 0 ? request : {
+      ...request,
+      maxOutputTokens: Math.min(request.maxOutputTokens * 2, 8_000),
+      instructions: `${request.instructions}\n上次输出未能完整解析。请精简文字，按要求重新生成完整 JSON，正确转义反斜杠；不要省略末尾字段或括号。`
+    };
+    try {
+      const raw = provider.definition.protocol === "responses"
+        ? await callResponsesProvider(env, provider, current)
+        : await callChatProvider(env, provider, current);
+      const result = normalizeModelOutput(raw, request.schema, request.schemaName);
+      return {
+        ...result,
+        meta: {
+          provider: provider.id,
+          providerLabel: provider.label,
+          model: provider.model,
+          serviceVersion: SERVICE_VERSION
+        }
+      };
+    } catch (error) {
+      if (!(error instanceof ModelOutputError) || attempt === 1) throw error;
+      // Keep student content and raw model output out of logs.
+      console.warn("Retrying model output", provider.id, request.schemaName, error.code);
     }
-  };
+  }
 }
 
 async function handleTutor(request, env) {
@@ -566,7 +585,7 @@ async function handleTutor(request, env) {
     return callModel(env, provider, {
       instructions: summaryInstructions(context),
       input: summaryInput(body.messages),
-      maxOutputTokens: 1_200,
+      maxOutputTokens: 2_800,
       schemaName: "math_tutor_summary",
       schema: TUTOR_SUMMARY_SCHEMA
     });
@@ -575,7 +594,7 @@ async function handleTutor(request, env) {
   return callModel(env, provider, {
     instructions: tutorInstructions(context, action),
     input: tutorInput(action, body.messages, body.input),
-    maxOutputTokens: 900,
+    maxOutputTokens: 2_000,
     schemaName: "math_tutor_turn",
     schema: TUTOR_RESPONSE_SCHEMA
   });
@@ -607,7 +626,7 @@ async function handleOcr(request, env) {
 严格要求：
 1. 忽略且绝不输出姓名、学校、班级、学号、考号、二维码等个人标识，只处理数学题和作答。
 2. 忠实转写看得清的题干、选项、图表文字、公式和学生答案；看不清就写入 warnings，不得猜测或补造。
-3. problem 使用清晰纯文本，分数可写 a/b，根式和公式可使用简洁 LaTeX；保留题号和小问。
+3. problem 使用清晰纯文本，分数可写 a/b，根式和公式可使用简洁 LaTeX，用 $...$ 包围并正确转义 JSON 反斜杠；保留题号和小问。
 4. title 用一句话概括这道错题；analysis 区分“卷面可见事实”和合理推测，correction 给简短正确方法。
 5. 从给定目录中选择最匹配的 unitId 与 skillId；无法判断时返回空字符串，并在 unitHint/skillHint 写自然语言提示。
 6. errorType 必须从给定枚举中选最可能的一项；没有明显错误时选“检查不足”并在 warnings 说明。
@@ -621,7 +640,7 @@ async function handleOcr(request, env) {
         { type: "input_image", image_url: imageDataUrl, detail: "original" }
       ]
     }],
-    maxOutputTokens: 1_800,
+    maxOutputTokens: 4_000,
     schemaName: "math_photo_ocr",
     schema: OCR_RESPONSE_SCHEMA
   });
@@ -646,6 +665,7 @@ export default {
         ok: true,
         configured,
         service: "math-ai-tutor-api",
+        version: SERVICE_VERSION,
         providers,
         defaults: {
           tutor: defaultTutor ? { provider: defaultTutor.id, label: defaultTutor.label, model: defaultTutor.model } : null,
@@ -666,10 +686,12 @@ export default {
       if (!result) return jsonResponse(request, env, { error: "接口不存在" }, 404);
       return jsonResponse(request, env, result);
     } catch (error) {
-      console.error("Request failed", error?.message || error);
-      const status = error instanceof HttpError ? error.status : 500;
-      const message = error instanceof HttpError ? error.message : "服务暂时不可用，请稍后重试";
-      return jsonResponse(request, env, { error: message }, status);
+      const expected = error instanceof HttpError || error instanceof ModelOutputError;
+      const code = expected ? error.code : "INTERNAL_ERROR";
+      console.error("Request failed", code);
+      const status = expected ? error.status : 500;
+      const message = expected ? error.message : "服务暂时不可用，请稍后重试";
+      return jsonResponse(request, env, { error: message, code }, status);
     }
   }
 };

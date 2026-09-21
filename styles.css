@@ -353,6 +353,7 @@ img {
 }
 
 .button.secondary {
+  color: var(--ink);
   border-color: var(--line);
   background: var(--card);
 }
@@ -876,6 +877,9 @@ img {
 }
 
 .message-bubble {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
   padding: 12px 14px;
   border-radius: 5px 16px 16px;
   background: #edf3ef;
@@ -903,10 +907,27 @@ img {
   border-left: 3px solid var(--orange);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.72);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-weight: 700;
-  white-space: pre-wrap;
+  max-width: 100%;
+  overflow-x: auto;
+  font-weight: 400;
+  font-size: 16px;
 }
+
+.math-rendered {
+  display: inline-block;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  vertical-align: middle;
+  padding: 3px 1px;
+  line-height: normal;
+  overflow-wrap: normal;
+  white-space: normal;
+}
+
+.math-display { display: block; margin: 8px 0; }
+.math-display .katex-display { margin: 0; text-align: left; }
+.math-fallback { overflow-wrap: anywhere; font-family: inherit; }
 
 .composer {
   padding: 15px 20px calc(15px + env(safe-area-inset-bottom));
@@ -973,6 +994,8 @@ img {
 }
 
 .suggestion-chip {
+  max-width: 100%;
+  overflow-wrap: anywhere;
   min-height: 32px;
   padding: 6px 10px;
   border: 1px solid #cfdad2;
@@ -980,7 +1003,7 @@ img {
   color: var(--forest-2);
   background: #f5f8f3;
   cursor: pointer;
-  font-size: 11px;
+  font-size: 13px;
 }
 
 .thinking {
@@ -1007,6 +1030,7 @@ img {
 
 .ai-error {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 9px;
   padding: 12px 14px;
@@ -1322,6 +1346,7 @@ img {
 
 .parent-banner {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 18px;
@@ -1337,7 +1362,7 @@ img {
 
 .parent-banner p {
   margin-top: 5px;
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(255, 255, 255, 0.9);
   font-size: 12px;
 }
 

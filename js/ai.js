@@ -145,9 +145,20 @@ async function requestJson(path, options = {}, config = getAiConfig()) {
       body: options.body ? JSON.stringify(options.body) : undefined,
       signal: controller.signal
     });
-    const payload = await response.json().catch(() => ({}));
+    const payload = await response.json().catch(() => null);
     if (!response.ok) {
-      throw new Error(payload?.error || `大模型服务暂时不可用（${response.status}）`);
+      const message = payload?.error === "模型返回格式异常，请重试"
+        ? "模型回复格式未识别，你的作答已保留。请家长更新 AI 服务后重试。"
+        : payload?.error || `大模型服务暂时不可用（${response.status}）`;
+      const error = new Error(message);
+      error.code = payload?.code || "SERVICE_ERROR";
+      throw error;
+    }
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      throw new Error("服务返回内容无法读取，你的作答已保留，请检查服务地址后重试");
+    }
+    if (path === "/api/tutor" && typeof payload[options.body?.action === "summary" ? "summary" : "reply"] !== "string") {
+      throw new Error("服务未返回完整的教学内容，你的作答已保留，请重试本轮");
     }
     return payload;
   } catch (error) {

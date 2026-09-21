@@ -1,4 +1,5 @@
 import { CURRICULUM, ERROR_TYPES, LESSONS, NAV_ITEMS, STATUS_META, TERM_OPTIONS } from "./data.js";
+import { renderMathText } from "./math.js";
 import {
   applyEvidence,
   buildTodayPlan,
@@ -241,13 +242,13 @@ function renderToday() {
 }
 
 function lessonMessageHtml(message) {
-  const text = escapeHtml(message.text).replaceAll("\n", "<br />");
+  const text = renderMathText(message.text);
   return `
     <div class="message ${message.role === "student" ? "student" : "assistant"}">
       <span class="message-avatar">${message.role === "student" ? escapeHtml(state.profile.surname || "我") : "芽"}</span>
       <div class="message-bubble">
         <p>${text}</p>
-        ${message.math ? `<span class="math-block">${escapeHtml(message.math)}</span>` : ""}
+        ${message.math ? `<div class="math-block">${renderMathText(message.math, { formula: true })}</div>` : ""}
       </div>
     </div>`;
 }
@@ -360,7 +361,7 @@ function renderAiLesson(runtime) {
         <div class="chat-log" id="chat-log">
           ${runtime.messages.map(lessonMessageHtml).join("")}
           ${runtime.loading ? '<div class="message assistant"><span class="message-avatar">芽</span><div class="message-bubble thinking" aria-label="AI正在思考"><i></i><i></i><i></i></div></div>' : ""}
-          ${runtime.error ? `<div class="ai-error"><strong>这次没有连上</strong><span>${escapeHtml(runtime.error)}</span><button class="button secondary small" type="button" data-action="retry-ai-request">重试本轮</button></div>` : ""}
+          ${runtime.error ? `<div class="ai-error" role="alert"><strong>本轮回复未完成</strong><span>${escapeHtml(runtime.error)}</span><button class="button secondary small" type="button" data-action="retry-ai-request">重试本轮</button></div>` : ""}
         </div>
         <form class="composer" id="ai-answer-form">
           <div class="composer-main">
@@ -368,7 +369,7 @@ function renderAiLesson(runtime) {
             <textarea id="ai-lesson-answer" name="answer" rows="2" autocomplete="off" placeholder="写答案、说思路，或直接问哪里没听懂……" required ${runtime.loading ? "disabled" : ""}></textarea>
             <button class="button primary" type="submit" ${runtime.loading ? "disabled" : ""}>发送</button>
           </div>
-          <div class="ai-suggestion-row">${suggestions.slice(0, 3).map((item) => `<button class="suggestion-chip" type="button" data-action="ai-quick-message" data-message="${escapeHtml(item)}" ${runtime.loading ? "disabled" : ""}>${escapeHtml(item)}</button>`).join("")}</div>
+          <div class="ai-suggestion-row">${suggestions.slice(0, 3).map((item) => `<button class="suggestion-chip" type="button" data-action="ai-quick-message" data-message="${escapeHtml(item)}" ${runtime.loading ? "disabled" : ""}>${renderMathText(item)}</button>`).join("")}</div>
         </form>
       </section>
       <aside class="lesson-side">
@@ -664,7 +665,7 @@ function appendAiResponse(runtime, result) {
     math: String(result.math || "")
   });
   runtime.suggestedActions = Array.isArray(result.suggestedActions)
-    ? result.suggestedActions.slice(0, 3).map((item) => String(item).slice(0, 50))
+    ? result.suggestedActions.slice(0, 3).map(String).filter((item) => item.length <= 500)
     : [];
   runtime.records.push({
     at: new Date().toISOString(),
@@ -1040,6 +1041,7 @@ async function testAiConnection() {
     if (status) {
       status.className = "connection-success";
       status.textContent = `服务已连接、密钥已配置 · 教学：${resolved.tutor.label} / 拍照：${resolved.ocr.label}。密钥是否有效需在实际课堂或拍照识题时验证；请再点击“保存设置”。`;
+      if (!result.version) status.textContent += " 当前 AI 服务版本较旧，请按配置教程更新，以减少回复格式错误。";
     }
   } catch (error) {
     if (status) {
@@ -1174,10 +1176,10 @@ async function openMistakeDetail(id) {
     <h2 style="margin:12px 0 5px;font-size:22px">${escapeHtml(mistake.title)}</h2>
     <p style="margin:0;color:var(--muted);font-size:12px">${escapeHtml(unit?.title || "未分类")} · ${escapeHtml(mistake.source)} · 已复习${mistake.reviewCount || 0}次</p>
     ${mistake.photoId ? `<div id="mistake-photo-slot" class="detail-block" style="text-align:center">正在读取原题图片……</div>` : ""}
-    <div class="detail-block"><h3>原题</h3><p>${escapeHtml(mistake.problem || "未录入题目文字，请查看原题图片。")}</p></div>
-    <div class="detail-block"><h3>当时的答案</h3><p>${escapeHtml(mistake.studentAnswer || "未记录")}</p></div>
-    <div class="detail-block"><h3>错误原因</h3><p>${escapeHtml(mistake.analysis || "待家长或AI课堂进一步分析")}</p></div>
-    <div class="detail-block"><h3>正确方法</h3><p>${escapeHtml(mistake.correction || "先重新独立完成，再对照标准解法；之后还要完成一道变式题。")}</p></div>
+    <div class="detail-block"><h3>原题</h3><p>${renderMathText(mistake.problem || "未录入题目文字，请查看原题图片。")}</p></div>
+    <div class="detail-block"><h3>当时的答案</h3><p>${renderMathText(mistake.studentAnswer || "未记录")}</p></div>
+    <div class="detail-block"><h3>错误原因</h3><p>${renderMathText(mistake.analysis || "待家长或AI课堂进一步分析")}</p></div>
+    <div class="detail-block"><h3>正确方法</h3><p>${renderMathText(mistake.correction || "先重新独立完成，再对照标准解法；之后还要完成一道变式题。")}</p></div>
     ${mistake.ocr?.warnings?.length ? `<div class="detail-block warning-block"><h3>识别提醒</h3><p>${mistake.ocr.warnings.map(escapeHtml).join("\n")}</p></div>` : ""}
     <div class="modal-actions" style="justify-content:space-between">
       <button class="button danger small" type="button" data-action="delete-mistake" data-id="${mistake.id}">删除</button>
@@ -1226,10 +1228,10 @@ function openReport(id) {
       <div class="setting-tile"><span>独立完成率</span><strong>${report.independentRate}%</strong></div>
     </div>
     ${report.aiProvider ? `<div class="detail-block"><h3>本节模型</h3><p>${escapeHtml(report.aiProvider.label || report.aiProvider.id || "AI")} ${report.aiProvider.model ? `· ${escapeHtml(report.aiProvider.model)}` : ""}</p></div>` : ""}
-    <div class="detail-block"><h3>本节结论</h3><p>${escapeHtml(report.summary)}</p></div>
-    <div class="detail-block"><h3>做得好的</h3><p>${(report.strengths || []).map((item) => `✓ ${escapeHtml(item)}`).join("\n") || "暂无记录"}</p></div>
-    <div class="detail-block"><h3>还要继续</h3><p>${(report.needsWork || []).map((item) => `• ${escapeHtml(item)}`).join("\n") || "暂无"}</p></div>
-    <div class="detail-block"><h3>下一步计划</h3><p>${escapeHtml(report.nextPlan || "由系统根据到期复习自动安排")}</p></div>
+    <div class="detail-block"><h3>本节结论</h3><p>${renderMathText(report.summary)}</p></div>
+    <div class="detail-block"><h3>做得好的</h3><p>${(report.strengths || []).map((item) => `✓ ${renderMathText(item)}`).join("<br />") || "暂无记录"}</p></div>
+    <div class="detail-block"><h3>还要继续</h3><p>${(report.needsWork || []).map((item) => `• ${renderMathText(item)}`).join("<br />") || "暂无"}</p></div>
+    <div class="detail-block"><h3>下一步计划</h3><p>${renderMathText(report.nextPlan || "由系统根据到期复习自动安排")}</p></div>
     <div class="detail-block"><h3>家长2分钟提问</h3><p>可以问：“你能不看笔记，讲讲‘${escapeHtml(report.title)}’最关键的一步吗？”只听孩子解释，不需要再布置一套题。</p></div>
     <div class="modal-actions"><button class="button secondary" type="button" data-action="print-report">打印</button><button class="button primary" type="button" data-action="close-modal">完成</button></div>`));
 }

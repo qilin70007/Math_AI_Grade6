@@ -8,7 +8,8 @@ import {
   normalizeEndpoint,
   normalizeProvider,
   providerLabel,
-  saveAiConfig
+  saveAiConfig,
+  startTutorSession
 } from "../js/ai.js";
 import { CURRICULUM } from "../js/data.js";
 import {
@@ -353,4 +354,13 @@ test("健康检查只公开配置状态、能力和模型，不公开密钥", as
   assert.equal(result.providers.find((item) => item.id === "deepseek").capabilities.ocr, true);
   assert.equal(JSON.stringify(result).includes("never-return-this-key"), false);
   assert.equal(JSON.stringify(result).includes("also-secret"), false);
+  assert.match(result.version, /^2026-/);
+});
+
+test("前端不会把 HTML 网关页或缺少内容的 200 响应当成成功", async (t) => {
+  for (const body of ["<html>Gateway error</html>", "{}", "[]"]) {
+    const mock = t.mock.method(globalThis, "fetch", async () => new Response(body, { status: 200 }));
+    await assert.rejects(startTutorSession({ topic: "分数" }, { endpoint: "https://worker.example", tutorProvider: "deepseek" }), /作答已保留/);
+    mock.mock.restore();
+  }
 });

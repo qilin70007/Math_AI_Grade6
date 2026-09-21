@@ -93,7 +93,35 @@ npm run deploy
 
 如需覆盖默认 API 地址，可在 `[vars]` 中增加对应变量：`OPENAI_BASE_URL`、`DEEPSEEK_BASE_URL`、`KIMI_BASE_URL`、`GLM_BASE_URL` 或 `HUNYUAN_BASE_URL`。例如使用中国大陆版 Moonshot 账户时，可按该账户控制台说明设置 `KIMI_BASE_URL`；不要混用不同站点签发的密钥和接口地址。
 
-## 五、本地联调
+## 五、已有 Worker 如何更新（修复回复格式错误）
+
+GitHub Pages 更新只会更新网页，已经部署的 Worker 不会随仓库提交自动更新。在电脑上打开终端，进入之前下载的 `Math_AI_Grade6` 仓库根目录，依次执行：
+
+```bash
+git pull --ff-only
+cd worker
+npm install
+npm run deploy
+```
+
+如果之前下载的是 ZIP、没有使用 Git，请从仓库绿色 **Code → Download ZIP** 重新下载最新代码并解压，在新文件夹的 `worker` 目录打开终端，执行 `npm install` 和 `npm run deploy`。若提示未登录，再执行 `npx wrangler login`，随后重新部署。
+
+使用原来的 Cloudflare 账户和 Worker 名称 `math-ai-tutor-api`；现有 `DEEPSEEK_API_KEY` Secret 会保留，无需重填密钥。更新后打开 `<Worker地址>/health`，应看到 `version: "2026-09-21.1"`（或更新版本）。回到课堂点击“重试本轮”，已有作答会保留。
+
+这次更新包含：
+
+- DeepSeek 明确使用 `thinking: {type: "disabled"}`，增加输出额度，避免思考过程占用额度后截断 JSON；配置依据见 [DeepSeek 思考模式](https://api-docs.deepseek.com/guides/thinking_mode/)。
+- 兼容公式反斜杠转义、JSON 代码块和尾逗号；不能修复的格式、空回复或截断，在同一厂商最多自动重试一次。不会跨厂商发送，也不会无限重试。参见 [DeepSeek JSON 输出说明](https://api-docs.deepseek.com/guides/json_mode/)。
+- 单次模型请求最多等待 30 秒；密钥、余额、频率及网络错误会显示对应原因。
+- `/health` 只说明配置和版本；没有实际 API Key 的自动测试使用模拟响应，不能代替真实课堂调用。
+
+## 六、“换国内的”需要区分两层
+
+课堂显示 **DeepSeek** 时已经在调用 DeepSeek 官方 API，换模型不是修复 JSON 格式错误的前提。当前网站由 GitHub Pages 承载，中转服务由 Cloudflare Worker 承载；这与模型提供商是两回事。
+
+如果更新后仍是超时或“无法连接”，需分别检查网页、Worker 和 DeepSeek 的连通性。也可以将网页和中转服务迁到你拥有的国内托管环境，再在家长设置中填写新的服务地址；API Key 仍须留在服务端。当前仓库的 Worker 部署命令只适用于 Cloudflare，迁往其他平台需适配部署方式，不能仅把 URL 改成另一个厂商域名。
+
+## 七、本地联调
 
 复制 `worker/.dev.vars.example` 为 `worker/.dev.vars`，只填写本次要测试的密钥；`.dev.vars` 已被 Git 忽略。
 

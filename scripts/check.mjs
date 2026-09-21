@@ -1,4 +1,4 @@
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, readdir } from "node:fs/promises";
 
 const requiredFiles = [
   "index.html",
@@ -8,6 +8,9 @@ const requiredFiles = [
   "assets/icon.svg",
   "js/app.js",
   "js/ai.js",
+  "js/math.js",
+  "vendor/katex/katex.js",
+  "vendor/katex/katex.min.css",
   "js/core.js",
   "js/data.js",
   "js/storage.js"
@@ -17,6 +20,7 @@ const serverFiles = [
   "worker/package.json",
   "worker/wrangler.toml",
   "worker/src/index.js",
+  "worker/src/model-output.js",
   "AI_SETUP.md"
 ];
 
@@ -29,11 +33,18 @@ if (!manifest.name || !manifest.start_url || !Array.isArray(manifest.icons) || !
 }
 
 const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
-for (const reference of ["./styles.css", "./js/app.js", "./manifest.webmanifest"]) {
+for (const reference of ["./styles.css", "./vendor/katex/katex.min.css", "./js/app.js", "./manifest.webmanifest"]) {
   if (!html.includes(reference)) throw new Error(`index.html 缺少资源引用：${reference}`);
 }
 
 const serviceWorker = await readFile(new URL("../sw.js", import.meta.url), "utf8");
+const fontCss = await readFile(new URL("../vendor/katex/katex.min.css", import.meta.url), "utf8");
+const fonts = await readdir(new URL("../vendor/katex/fonts/", import.meta.url));
+for (const match of fontCss.matchAll(/url\(([^)]+)\)/g)) {
+  const font = match[1];
+  if (!fonts.includes(font.replace(/^fonts\//, ""))) throw new Error(`公式字体缺失：${font}`);
+  if (!serviceWorker.includes(`./vendor/katex/${font}`)) throw new Error(`离线公式字体缺失：${font}`);
+}
 for (const file of requiredFiles.filter((item) => !item.startsWith("tests/"))) {
   if (["sw.js"].includes(file)) continue;
   if (!serviceWorker.includes(`./${file}`) && file !== "manifest.webmanifest") {
